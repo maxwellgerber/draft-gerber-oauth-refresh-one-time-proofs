@@ -30,6 +30,18 @@ Abstract
    concurrent use of a copied key is detected in the same way that
    rotation detects reuse.
 
+Discussion Venues
+
+   This note is to be removed before publishing as an RFC.
+
+   Discussion of this document takes place on the Web Authorization
+   Protocol Working Group mailing list (oauth@ietf.org), which is
+   archived at https://mailarchive.ietf.org/arch/browse/oauth/.
+
+   Source for this draft and an issue tracker can be found at
+   https://github.com/maxwellgerber/draft-gerber-oauth-refresh-one-time-
+   proofs.
+
 Status of This Memo
 
    This Internet-Draft is submitted in full conformance with the
