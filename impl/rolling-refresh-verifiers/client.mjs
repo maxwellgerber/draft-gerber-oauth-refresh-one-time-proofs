@@ -6,7 +6,7 @@
 //
 // Grant state: { refresh_token, n, v, next }
 //   n     the step number of the challenge the AS currently holds
-//   v     the verifier for that challenge: challenge_n = SHA256(n "." v)
+//   v     the verifier for that challenge: challenge_n = SHA256(v)
 //   next  the verifier this client has committed to (or is about to), saved before sending
 
 const enc = (s) => new TextEncoder().encode(s);
@@ -58,7 +58,7 @@ export function createClient({
 
   async function finishSetup(state) {
     const { code, codeVerifier, redirectUri, v } = state.setup;
-    const refresh_challenge = await H(`1.${v}`);
+    const refresh_challenge = await H(v);
     for (let i = 0; i < maxAttempts; i++) {
       if (i) await sleep(Math.min(100 * 2 ** i, 5000));
       const r = await attempt(
@@ -89,7 +89,7 @@ export function createClient({
       }
       await hook('refresh:pending-saved');
       const r = await attempt(
-        { grant_type: 'refresh_token', refresh_token: g.refresh_token, refresh_counter: String(g.n), refresh_verifier: g.v, refresh_challenge: await H(`${g.n + 1}.${g.next}`) },
+        { grant_type: 'refresh_token', refresh_token: g.refresh_token, refresh_counter: String(g.n), refresh_verifier: g.v, refresh_challenge: await H(g.next) },
         (b) => typeof b.access_token === 'string');
 
       if (r.kind === 'lost') { await sleep(Math.min(100 * 2 ** i, 5000)); continue; }  // resend identical
@@ -99,7 +99,7 @@ export function createClient({
         throw new TerminalError(r.body.error);
       }
       await hook('refresh:response');
-      g.n += 1;                             // the AS now holds H(n "." next) as current
+      g.n += 1;                             // the AS now holds H(next) as current
       g.v = g.next;
       g.next = null;
       await store.save(state);

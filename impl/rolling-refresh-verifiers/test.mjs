@@ -78,7 +78,7 @@ const isAT = (v) => typeof v === 'string' && v.length >= 40;
 const once = (at, mode) => (i) => (i === at ? mode : 'ok');
 const crashOnce = (point) => { let done = false; return (p) => { if (p === point && !done) { done = true; throw new Crash(point); } }; };
 const rtOf = (store) => store.data.grant.refresh_token;
-const inSync = async (as, store) => { const g = store.data.grant, s = as.grant(rtOf(store)); assert.equal(s.n, g.n, 'same step'); assert.equal(s.current, await H(`${g.n}.${g.v}`), 'AS current == H(n.verifier)'); };
+const inSync = async (as, store) => { const g = store.data.grant, s = as.grant(rtOf(store)); assert.equal(s.n, g.n, 'same step'); assert.equal(s.current, await H(g.v), 'AS current == H(verifier)'); };
 const refreshes = (net) => net.log.filter((l) => l.params.grant_type === 'refresh_token');
 
 const V = (s) => s.padEnd(43, 'x');
@@ -256,7 +256,7 @@ test('any captured request replayed with a different next challenge revokes; a s
     const d = newDevice(), c = d.client();
     await login(c);
     for (let i = 0; i < 5; i++) await c.refresh();
-    const r = await net.send({ ...refreshes(net)[which].params, refresh_challenge: await H('2.attacker') });
+    const r = await net.send({ ...refreshes(net)[which].params, refresh_challenge: await H("attacker") });
     assert.equal(r.body.access_token, undefined);
     assert.equal(as.stats.revocations, 1, `capture ${which}`);
     await assert.rejects(c.refresh(), TerminalError);
@@ -319,12 +319,12 @@ async function hijack(t, history, attackerRefreshes, clientReturns = true) {
   const stolen = net.delayed.splice(0)[0];
   const chain = Array.from({ length: attackerRefreshes + 2 }, (_, i) => V('attacker-' + i));
   const n0 = Number(stolen.refresh_counter);
-  assert.ok(isAT((await net.send({ ...stolen, refresh_challenge: await H(`${n0 + 1}.${chain[0]}`) })).body.access_token));
+  assert.ok(isAT((await net.send({ ...stolen, refresh_challenge: await H(chain[0]) })).body.access_token));
   for (let i = 0; i < attackerRefreshes; i++)
-    assert.ok(isAT((await net.send(req(stolen.refresh_token, n0 + 1 + i, chain[i], await H(`${n0 + 2 + i}.${chain[i + 1]}`)))).body.access_token));
+    assert.ok(isAT((await net.send(req(stolen.refresh_token, n0 + 1 + i, chain[i], await H(chain[i + 1])))).body.access_token));
   if (clientReturns) await assert.rejects(d.client().refresh(), TerminalError);   // client retries its own request
   const k = attackerRefreshes;
-  const attackerStillIn = isAT((await net.send(req(stolen.refresh_token, n0 + 1 + k, chain[k], await H(`${n0 + 2 + k}.${chain[k + 1]}`)))).body.access_token);
+  const attackerStillIn = isAT((await net.send(req(stolen.refresh_token, n0 + 1 + k, chain[k], await H(chain[k + 1])))).body.access_token);
   return { revocations: as.stats.revocations, attackerStillIn };
 }
 for (const k of [0, 1, 2, 30])

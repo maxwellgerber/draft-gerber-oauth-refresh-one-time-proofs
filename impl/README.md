@@ -7,7 +7,7 @@ code.
 - `one-time-proofs/`: draft-gerber-oauth-refresh-one-time-proofs (signed
   counter and nonce; ES256 and Ed25519).
 - `rolling-refresh-verifiers/`: draft-gerber-oauth-rolling-refresh-verifiers
-  (counted hash chain; SHA-256 only).
+  (rolling PKCE-style verifiers with a step counter; SHA-256 only).
 
 Each directory has the same layout: `server.mjs`, `client.mjs` (runs in Node
 and in a browser), `test.mjs`, and `browser.html`, `browser_test.py` and

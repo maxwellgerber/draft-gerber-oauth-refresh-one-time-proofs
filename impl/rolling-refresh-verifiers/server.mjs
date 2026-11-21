@@ -2,7 +2,7 @@
 //
 // Per grant the AS keeps:
 //   n        the step number of the challenge it holds
-//   current  that challenge, = SHA256(n "." verifier_n)
+//   current  that challenge, = SHA256(verifier_n), the PKCE S256 transform
 //   spent    the last `history` accepted steps: n -> { challenge, successor }
 //
 // Refresh request: refresh_token, refresh_counter (n), refresh_verifier, refresh_challenge (for n+1).
@@ -59,7 +59,7 @@ export function createAS({ history = 8, codeTtlMs = 60_000, now = () => Date.now
     if (!/^[1-9][0-9]{0,15}$/.test(p.refresh_counter ?? '') || !HASH.test(p.refresh_verifier ?? '') || !HASH.test(p.refresh_challenge ?? ''))
       return err('invalid_request');
     const n = Number(p.refresh_counter);
-    const h = H(`${n}.${p.refresh_verifier}`);
+    const h = H(p.refresh_verifier);
 
     if (n === g.n) {
       if (h !== g.current) { stats.rejects++; return err('invalid_grant'); }   // no verifier knowledge: no change
