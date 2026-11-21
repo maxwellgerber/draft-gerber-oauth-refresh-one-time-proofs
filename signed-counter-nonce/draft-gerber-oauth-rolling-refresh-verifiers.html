@@ -1367,8 +1367,8 @@ continue.<a href="#section-1.4-2.6.1" class="pilcrow">¶</a></p>
           <dd class="break"></dd>
 <dt id="section-1.4-2.7">No new cryptography:</dt>
           <dd style="margin-left: 1.5em" id="section-1.4-2.8">
-            <p id="section-1.4-2.8.1">The only primitive is SHA-256, which clients and authorization servers that
-implement PKCE <span>[<a href="#RFC7636" class="cite xref">RFC7636</a>]</span> already have.<a href="#section-1.4-2.8.1" class="pilcrow">¶</a></p>
+            <p id="section-1.4-2.8.1">The only computation is the <code>S256</code> transformation of PKCE <span>[<a href="#RFC7636" class="cite xref">RFC7636</a>]</span>, which
+clients and authorization servers that implement PKCE already have.<a href="#section-1.4-2.8.1" class="pilcrow">¶</a></p>
 </dd>
         <dd class="break"></dd>
 </dl>
@@ -1404,8 +1404,8 @@ for a grant. The first refresh request is step 1.<a href="#section-1.5-3.2.1" cl
           <dd class="break"></dd>
 <dt id="section-1.5-3.5">Refresh challenge:</dt>
           <dd style="margin-left: 1.5em" id="section-1.5-3.6">
-            <p id="section-1.5-3.6.1">The value computed from a step number and that step's refresh verifier as
-described in <a href="#challenge" class="auto internal xref">Section 3</a>.<a href="#section-1.5-3.6.1" class="pilcrow">¶</a></p>
+            <p id="section-1.5-3.6.1">The SHA-256 hash of a refresh verifier, computed as described in
+<a href="#challenge" class="auto internal xref">Section 3</a>.<a href="#section-1.5-3.6.1" class="pilcrow">¶</a></p>
 </dd>
           <dd class="break"></dd>
 <dt id="section-1.5-3.7">Verifier-bound refresh token:</dt>
@@ -1522,14 +1522,18 @@ authorization server would have accepted the request in (G).<a href="#section-2-
 <a href="#section-3" class="section-number selfRef">3. </a><a href="#name-refresh-challenge" class="section-name selfRef">Refresh Challenge</a>
       </h2>
 <p id="section-3-1">A refresh verifier is generated in the manner of the PKCE <code>code_verifier</code>
-(<span><a href="https://rfc-editor.org/rfc/rfc7636#section-4.1" class="relref">Section 4.1</a> of [<a href="#RFC7636" class="cite xref">RFC7636</a>]</span>) and <span class="bcp14">MUST</span> contain at least 256 bits of entropy.<a href="#section-3-1" class="pilcrow">¶</a></p>
-<p id="section-3-2">The refresh challenge for step n is computed from the decimal representation of
-n, without leading zeros, and the refresh verifier for step n:<a href="#section-3-2" class="pilcrow">¶</a></p>
+(<span><a href="https://rfc-editor.org/rfc/rfc7636#section-4.1" class="relref">Section 4.1</a> of [<a href="#RFC7636" class="cite xref">RFC7636</a>]</span>) and <span class="bcp14">MUST</span> contain at least 256 bits of entropy. The
+client generates a new refresh verifier for each step.<a href="#section-3-1" class="pilcrow">¶</a></p>
+<p id="section-3-2">The refresh challenge is computed from the refresh verifier by the
+transformation that <span><a href="https://rfc-editor.org/rfc/rfc7636#section-4.2" class="relref">Section 4.2</a> of [<a href="#RFC7636" class="cite xref">RFC7636</a>]</span> defines for the <code>S256</code> code
+challenge method:<a href="#section-3-2" class="pilcrow">¶</a></p>
 <div class="alignLeft art-text artwork" id="section-3-3">
 <pre>
-refresh_challenge = BASE64URL(SHA256(ASCII(n "." refresh_verifier)))
+refresh_challenge = BASE64URL(SHA256(ASCII(refresh_verifier)))
 </pre><a href="#section-3-3" class="pilcrow">¶</a>
 </div>
+<p id="section-3-4">The step number is not an input to the hash. It is conveyed in the
+<code>refresh_counter</code> parameter (<a href="#refresh-request" class="auto internal xref">Section 5.1</a>).<a href="#section-3-4" class="pilcrow">¶</a></p>
 </section>
 </div>
 <div id="code-grant">
@@ -1615,18 +1619,18 @@ malformed, reject the request with <code>invalid_request</code>.<a href="#sectio
 </li>
           <li id="section-5.2-3.2">
             <p id="section-5.2-3.2.1">If <code>refresh_counter</code> equals the current step number, compute the refresh
-challenge from <code>refresh_counter</code> and <code>refresh_verifier</code>. If it does not
-equal the challenge held, reject the request with <code>invalid_grant</code>; the grant
-<span class="bcp14">MUST NOT</span> be revoked and its state <span class="bcp14">MUST NOT</span> change. Otherwise accept the
-request: record it, increment the step number, replace the challenge held
-with <code>refresh_challenge</code>, and issue an access token (<a href="#success" class="auto internal xref">Section 5.3</a>).<a href="#section-5.2-3.2.1" class="pilcrow">¶</a></p>
+challenge from <code>refresh_verifier</code>. If it does not equal the challenge held,
+reject the request with <code>invalid_grant</code>; the grant <span class="bcp14">MUST NOT</span> be revoked and
+its state <span class="bcp14">MUST NOT</span> change. Otherwise accept the request: record it,
+increment the step number, replace the challenge held with
+<code>refresh_challenge</code>, and issue an access token (<a href="#success" class="auto internal xref">Section 5.3</a>).<a href="#section-5.2-3.2.1" class="pilcrow">¶</a></p>
 </li>
           <li id="section-5.2-3.3">
             <p id="section-5.2-3.3.1">Otherwise, if a record exists for step <code>refresh_counter</code>, the challenge
-computed from <code>refresh_counter</code> and <code>refresh_verifier</code> equals the challenge
-in that record, and <code>refresh_challenge</code> equals the one in that record,
-reject the request with <code>duplicate_request</code> (<a href="#duplicate-request" class="auto internal xref">Section 5.4</a>). The
-grant's state <span class="bcp14">MUST NOT</span> change.<a href="#section-5.2-3.3.1" class="pilcrow">¶</a></p>
+computed from <code>refresh_verifier</code> equals the challenge in that record, and
+<code>refresh_challenge</code> equals the one in that record, reject the request with
+<code>duplicate_request</code> (<a href="#duplicate-request" class="auto internal xref">Section 5.4</a>). The grant's state <span class="bcp14">MUST NOT</span>
+change.<a href="#section-5.2-3.3.1" class="pilcrow">¶</a></p>
 </li>
           <li id="section-5.2-3.4">
             <p id="section-5.2-3.4.1">Otherwise, revoke the grant and reject the request with <code>invalid_grant</code>.<a href="#section-5.2-3.4.1" class="pilcrow">¶</a></p>
@@ -1639,8 +1643,9 @@ reached. Each indicates that the refresh token is held by a party whose state
 differs from that of the party whose requests were accepted. This is the
 condition that refresh token rotation is intended to detect.<a href="#section-5.2-4" class="pilcrow">¶</a></p>
 <p id="section-5.2-5">The authorization server cannot verify a refresh verifier for a step it no
-longer records. A request for such a step is acted upon on the strength of the
-refresh token alone (<a href="#leaked-token" class="auto internal xref">Section 8.2</a>).<a href="#section-5.2-5" class="pilcrow">¶</a></p>
+longer records, and the value of <code>refresh_counter</code> is not authenticated. A
+request for such a step is acted upon on the strength of the refresh token
+alone (<a href="#leaked-token" class="auto internal xref">Section 8.2</a>).<a href="#section-5.2-5" class="pilcrow">¶</a></p>
 <p id="section-5.2-6">Steps 2 through 4 <span class="bcp14">MUST</span> be performed atomically with respect to other requests
 for the same grant. This document assumes an authorization server that provides
 this consistency.<a href="#section-5.2-6" class="pilcrow">¶</a></p>
@@ -1967,8 +1972,8 @@ server.<a href="#appendix-A-2.8.1" class="pilcrow">¶</a></p>
 implementation of this document. The client identifier and host are
 illustrative. Line breaks are for display only.<a href="#appendix-B-1" class="pilcrow">¶</a></p>
 <p id="appendix-B-2">Authorization code exchange. The refresh verifier for step 1 is
-<code>WOYZKJGPiOuLIRAT1Cs5yAvSvC2CJy6szGI0MHYxHfg</code>, and <code>refresh_challenge</code> is the
-SHA-256 hash of that value prefixed with "1.".<a href="#appendix-B-2" class="pilcrow">¶</a></p>
+<code>KQ73YiMgKt858e-Wq7BjbEiYKLqi24Ui6Sep_jBSJ_U</code>, and <code>refresh_challenge</code> is its
+SHA-256 hash.<a href="#appendix-B-2" class="pilcrow">¶</a></p>
 <div class="alignLeft art-text artwork" id="appendix-B-3">
 <pre>
 POST /token HTTP/1.1
@@ -1977,23 +1982,24 @@ Content-Type: application/x-www-form-urlencoded
 
 grant_type=authorization_code
 &amp;client_id=s6BhdRkqt3
-&amp;code=Qfz3wmoZdqzRg6MOqlJKdw
-&amp;code_verifier=aHOUgiZjTctiVs3a6gfFI8drhZk-6qimeffKQ4PDxb0
-&amp;refresh_challenge=bzitHP5nuIu3igxcubWQHzU-T0hpX4bHnJRy9gzPeIA
+&amp;code=BIIMCIIc-ztr4194lF-63w
+&amp;code_verifier=4u2nKhk965Ss_l96H6P0kXitAE8gMrtj2futh96OCYY
+&amp;refresh_challenge=3ZW7jA0oxB3ZJtTGAPSsTqN9t9ZemLqIWPtlD2aSui0
 
 HTTP/1.1 200 OK
 Content-Type: application/json
 Cache-Control: no-store
 
 {
-  "access_token": "7obGbxa6EyHntDYG1Qe2R2biV4Ptg2bB7rNvePDQHqI",
+  "access_token": "mUlLUnctXwke4HVaH9zPmDHHnlrcnPTIc_-SX_lSkb4",
   "token_type": "Bearer",
   "expires_in": 600,
-  "refresh_token": "bVOpAlZTYSQU5Th2aZx8s9QyrWtyfh2B8A5K7tjAMzU"
+  "refresh_token": "E5nT27jbbU8h1t6yG9RRJq5JpxUwDjEMMMT5eozjaAw"
 }
 </pre><a href="#appendix-B-3" class="pilcrow">¶</a>
 </div>
-<p id="appendix-B-4">Step 1:<a href="#appendix-B-4" class="pilcrow">¶</a></p>
+<p id="appendix-B-4">Step 1. The request reveals the verifier for step 1 and carries the challenge
+for step 2.<a href="#appendix-B-4" class="pilcrow">¶</a></p>
 <div class="alignLeft art-text artwork" id="appendix-B-5">
 <pre>
 POST /token HTTP/1.1
@@ -2002,17 +2008,17 @@ Content-Type: application/x-www-form-urlencoded
 
 grant_type=refresh_token
 &amp;client_id=s6BhdRkqt3
-&amp;refresh_token=bVOpAlZTYSQU5Th2aZx8s9QyrWtyfh2B8A5K7tjAMzU
+&amp;refresh_token=E5nT27jbbU8h1t6yG9RRJq5JpxUwDjEMMMT5eozjaAw
 &amp;refresh_counter=1
-&amp;refresh_verifier=WOYZKJGPiOuLIRAT1Cs5yAvSvC2CJy6szGI0MHYxHfg
-&amp;refresh_challenge=ccHSuE_FvTGVaOOumztNpxcwwZnXZUFHGcvEEQfyGfk
+&amp;refresh_verifier=KQ73YiMgKt858e-Wq7BjbEiYKLqi24Ui6Sep_jBSJ_U
+&amp;refresh_challenge=J3Z3qjxXfxpU6ZxTRSl4GjiUs50Sy5VXO1JO_gkQmyc
 
 HTTP/1.1 200 OK
 Content-Type: application/json
 Cache-Control: no-store
 
 {
-  "access_token": "qrGnTH2fW4-oWjhgQ9Y-OwJFgCvkC4SPd8wwO1lgX9E",
+  "access_token": "a3etJ4BriabCTWx2GgI2avg00ohdW3Ebkug2cun-h8U",
   "token_type": "Bearer",
   "expires_in": 600
 }
@@ -2028,10 +2034,10 @@ Content-Type: application/x-www-form-urlencoded
 
 grant_type=refresh_token
 &amp;client_id=s6BhdRkqt3
-&amp;refresh_token=bVOpAlZTYSQU5Th2aZx8s9QyrWtyfh2B8A5K7tjAMzU
+&amp;refresh_token=E5nT27jbbU8h1t6yG9RRJq5JpxUwDjEMMMT5eozjaAw
 &amp;refresh_counter=2
-&amp;refresh_verifier=evWRDcEKaIO5028u3UWCxJXVK5GMKqQF0Z9zbXGV8H0
-&amp;refresh_challenge=xn-GDKn5QVNnjFGdjuYAsntL69-V3rYaM0wAzpJeafY
+&amp;refresh_verifier=DUyFynJ5SEn4Jei7KrVjsqQWks1Fx6kbit_RGUNiL4w
+&amp;refresh_challenge=CpiK9LIoTDNS5gV_GcmVpvUm8vTXwrugbl1tIW6M8rM
 
 HTTP/1.1 400 Bad Request
 Content-Type: application/json
@@ -2049,17 +2055,17 @@ Content-Type: application/x-www-form-urlencoded
 
 grant_type=refresh_token
 &amp;client_id=s6BhdRkqt3
-&amp;refresh_token=bVOpAlZTYSQU5Th2aZx8s9QyrWtyfh2B8A5K7tjAMzU
+&amp;refresh_token=E5nT27jbbU8h1t6yG9RRJq5JpxUwDjEMMMT5eozjaAw
 &amp;refresh_counter=3
-&amp;refresh_verifier=BJcydipBDbZOaMAH3pTlFL7vspEC_Sb8Hgk70u6u06c
-&amp;refresh_challenge=f2YavZ-_TxA6aYhdGDwE_an5WhZo4X_r_aeMs0WOLC0
+&amp;refresh_verifier=-zGKFI3er4rL5c6kCxk5kmi-CQrhVLmnKGoBsLv71P8
+&amp;refresh_challenge=EYbBuhH4I62biOTQ6csnyzHKSqO8DKAUmxTpMSfomyM
 
 HTTP/1.1 200 OK
 Content-Type: application/json
 Cache-Control: no-store
 
 {
-  "access_token": "sdoybw0h7FZruRuqzgJqaJG10ZH3pw2me8DeY-FclX8",
+  "access_token": "YnD0BB0wHNwiH6f15fX5TW5YHX3xcRNEMHEBrRL41JY",
   "token_type": "Bearer",
   "expires_in": 600
 }
@@ -2078,10 +2084,10 @@ Content-Type: application/x-www-form-urlencoded
 
 grant_type=refresh_token
 &amp;client_id=s6BhdRkqt3
-&amp;refresh_token=bVOpAlZTYSQU5Th2aZx8s9QyrWtyfh2B8A5K7tjAMzU
+&amp;refresh_token=E5nT27jbbU8h1t6yG9RRJq5JpxUwDjEMMMT5eozjaAw
 &amp;refresh_counter=5
-&amp;refresh_verifier=5hLBTwyr0S4USRJRzjkFTyP6BJbQP8g-eNnbz9gvbAU
-&amp;refresh_challenge=q5H14BKMcaoIaptNEo_FnvWG0BX5dsRxML9DVXuoSBM
+&amp;refresh_verifier=8jJRDgYIfHL4qWwG4Qu3KjoqT3930LGZu5rjsjyc4GQ
+&amp;refresh_challenge=UtTAIbSw-fxGlSFYXjuwUFVBE03QHWIl6CadmUt0tg0
 
 HTTP/1.1 400 Bad Request
 Content-Type: application/json
@@ -2106,44 +2112,37 @@ comment is invited on each.<a href="#appendix-C-1" class="pilcrow">¶</a></p>
 the number is to be specified or left to deployment (<a href="#retention" class="auto internal xref">Section 8.5</a>).<a href="#appendix-C-2.2.1" class="pilcrow">¶</a></p>
 </dd>
         <dd class="break"></dd>
-<dt id="appendix-C-2.3">Step number in the challenge:</dt>
+<dt id="appendix-C-2.3">Revocation on the refresh token alone:</dt>
         <dd style="margin-left: 1.5em" id="appendix-C-2.4">
-          <p id="appendix-C-2.4.1">Whether the step number needs to be an input to the hash. The authorization
-server checks a verifier only against a challenge held for a specific step,
-and detection does not appear to depend on the binding.<a href="#appendix-C-2.4.1" class="pilcrow">¶</a></p>
-</dd>
-        <dd class="break"></dd>
-<dt id="appendix-C-2.5">Revocation on the refresh token alone:</dt>
-        <dd style="margin-left: 1.5em" id="appendix-C-2.6">
-          <p id="appendix-C-2.6.1">Whether revocation by a party that holds only the refresh token
+          <p id="appendix-C-2.4.1">Whether revocation by a party that holds only the refresh token
 (<a href="#leaked-token" class="auto internal xref">Section 8.2</a>) is acceptable, and whether a malformed request or a
-request without a verifier should have the same effect.<a href="#appendix-C-2.6.1" class="pilcrow">¶</a></p>
+request without a verifier should have the same effect.<a href="#appendix-C-2.4.1" class="pilcrow">¶</a></p>
 </dd>
         <dd class="break"></dd>
-<dt id="appendix-C-2.7">Lost code exchange response:</dt>
+<dt id="appendix-C-2.5">Lost code exchange response:</dt>
+        <dd style="margin-left: 1.5em" id="appendix-C-2.6">
+          <p id="appendix-C-2.6.1">The authorization code exchange is not retryable.<a href="#appendix-C-2.6.1" class="pilcrow">¶</a></p>
+</dd>
+        <dd class="break"></dd>
+<dt id="appendix-C-2.7">Other grants:</dt>
         <dd style="margin-left: 1.5em" id="appendix-C-2.8">
-          <p id="appendix-C-2.8.1">The authorization code exchange is not retryable.<a href="#appendix-C-2.8.1" class="pilcrow">¶</a></p>
+          <p id="appendix-C-2.8.1">Only the authorization code grant is covered.<a href="#appendix-C-2.8.1" class="pilcrow">¶</a></p>
 </dd>
         <dd class="break"></dd>
-<dt id="appendix-C-2.9">Other grants:</dt>
+<dt id="appendix-C-2.9">Confidential clients:</dt>
         <dd style="margin-left: 1.5em" id="appendix-C-2.10">
-          <p id="appendix-C-2.10.1">Only the authorization code grant is covered.<a href="#appendix-C-2.10.1" class="pilcrow">¶</a></p>
+          <p id="appendix-C-2.10.1">Whether the mechanism is of use to clients that authenticate.<a href="#appendix-C-2.10.1" class="pilcrow">¶</a></p>
 </dd>
         <dd class="break"></dd>
-<dt id="appendix-C-2.11">Confidential clients:</dt>
+<dt id="appendix-C-2.11">Parameter names:</dt>
         <dd style="margin-left: 1.5em" id="appendix-C-2.12">
-          <p id="appendix-C-2.12.1">Whether the mechanism is of use to clients that authenticate.<a href="#appendix-C-2.12.1" class="pilcrow">¶</a></p>
+          <p id="appendix-C-2.12.1">All names in this document are provisional. <code>refresh_counter</code> and
+<code>duplicate_request</code> are shared with One-Time Refresh Proofs.<a href="#appendix-C-2.12.1" class="pilcrow">¶</a></p>
 </dd>
         <dd class="break"></dd>
-<dt id="appendix-C-2.13">Parameter names:</dt>
+<dt id="appendix-C-2.13">IANA considerations:</dt>
         <dd style="margin-left: 1.5em" id="appendix-C-2.14">
-          <p id="appendix-C-2.14.1">All names in this document are provisional. <code>refresh_counter</code> and
-<code>duplicate_request</code> are shared with One-Time Refresh Proofs.<a href="#appendix-C-2.14.1" class="pilcrow">¶</a></p>
-</dd>
-        <dd class="break"></dd>
-<dt id="appendix-C-2.15">IANA considerations:</dt>
-        <dd style="margin-left: 1.5em" id="appendix-C-2.16">
-          <p id="appendix-C-2.16.1">Not yet written.<a href="#appendix-C-2.16.1" class="pilcrow">¶</a></p>
+          <p id="appendix-C-2.14.1">Not yet written.<a href="#appendix-C-2.14.1" class="pilcrow">¶</a></p>
 </dd>
       <dd class="break"></dd>
 </dl>
