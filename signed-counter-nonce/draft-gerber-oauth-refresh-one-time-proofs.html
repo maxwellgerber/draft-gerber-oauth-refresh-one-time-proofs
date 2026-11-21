@@ -2136,14 +2136,24 @@ clients that implement DPoP, giving those clients detection as well.<a href="#ap
           <p id="appendix-B-2.12.1">Whether the mechanism is of use to clients that authenticate.<a href="#appendix-B-2.12.1" class="pilcrow">¶</a></p>
 </dd>
         <dd class="break"></dd>
-<dt id="appendix-B-2.13">Parameter names:</dt>
+<dt id="appendix-B-2.13">Keyless alternative:</dt>
         <dd style="margin-left: 1.5em" id="appendix-B-2.14">
-          <p id="appendix-B-2.14.1">All names in this document are provisional.<a href="#appendix-B-2.14.1" class="pilcrow">¶</a></p>
+          <p id="appendix-B-2.14.1">A companion proposal, "OAuth 2.0 Rolling Refresh Verifiers"
+(draft-gerber-oauth-rolling-refresh-verifiers), has the same sequence
+structure but replaces the signature with a hash preimage in the manner of
+PKCE. It requires no asymmetric cryptography, cannot use non-extractable
+storage, and allows a party holding only the refresh token to cause
+revocation. Which of the two is preferable is an open question.<a href="#appendix-B-2.14.1" class="pilcrow">¶</a></p>
 </dd>
         <dd class="break"></dd>
-<dt id="appendix-B-2.15">IANA considerations:</dt>
+<dt id="appendix-B-2.15">Parameter names:</dt>
         <dd style="margin-left: 1.5em" id="appendix-B-2.16">
-          <p id="appendix-B-2.16.1">Not yet written.<a href="#appendix-B-2.16.1" class="pilcrow">¶</a></p>
+          <p id="appendix-B-2.16.1">All names in this document are provisional.<a href="#appendix-B-2.16.1" class="pilcrow">¶</a></p>
+</dd>
+        <dd class="break"></dd>
+<dt id="appendix-B-2.17">IANA considerations:</dt>
+        <dd style="margin-left: 1.5em" id="appendix-B-2.18">
+          <p id="appendix-B-2.18.1">Not yet written.<a href="#appendix-B-2.18.1" class="pilcrow">¶</a></p>
 </dd>
       <dd class="break"></dd>
 </dl>
