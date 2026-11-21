@@ -14,481 +14,663 @@ author:
 normative:
   RFC4648:
   RFC6749:
-  FIPS186-5:
-    title: Digital Signature Standard (DSS)
-    target: https://doi.org/10.6028/NIST.FIPS.186-5
-    date: 2023-02
-    author:
-     - org: National Institute of Standards and Technology
-    seriesinfo:
-      FIPS: PUB 186-5
-      DOI: 10.6028/NIST.FIPS.186-5
-  SEC1:
-    title: "SEC 1: Elliptic Curve Cryptography"
-    target: https://www.secg.org/sec1-v2.pdf
-    date: 2009-05
-    author:
-     - org: Standards for Efficient Cryptography Group
-    seriesinfo:
-      Version: "2.0"
+  RFC7517:
+  RFC7518:
+  RFC7636:
+  RFC8414:
 informative:
-  RFC8705:
+  RFC6819:
   RFC9449:
+  RFC9635:
   RFC9700:
+  FAPI2:
+    title: FAPI 2.0 Security Profile
+    target: https://openid.net/specs/fapi-security-profile-2_0-final.html
+    date: 2025-02
+    author:
+     - name: D. Fett
+     - name: D. Tonge
+     - name: J. Heenan
+    seriesinfo:
+      OpenID: Foundation
 ...
 
 --- abstract
 
-Refresh token rotation asks the authorization server to deliver a new secret to
-the client in every refresh response, and then treats any later appearance of
-the old secret as evidence of theft. When a response is lost, the legitimate
-client's retry is indistinguishable from token theft, and the grant is revoked.
+Refresh token rotation was introduced so that an authorization server could
+detect the theft of a refresh token held by a public client. It fails when a
+token response is lost: the client retries with a superseded refresh token and
+the authorization server revokes the grant. Sender-constrained refresh tokens
+do not have this failure, but they provide no means of detecting that a key is
+in use by more than one party.
 
-This document defines an alternative for clients that are unable or unwilling
-to implement DPoP. The client generates a key pair, registers the public key
-when it redeems the authorization code, and thereafter accompanies each use of
-a non-rotating refresh token with a signature over a strictly increasing
-counter and a nonce. Everything the client needs in order to retry is something
-the client itself generated, so a lost response can no longer desynchronize the
-two parties. Replay of a captured request yields nothing, and concurrent use of
-a copied key is detected in the same way that rotation detects reuse.
+This document defines a mechanism in which the client proves possession of a
+key each time it uses a refresh token, by signing a counter and a nonce. The
+refresh token is not rotated and no secret is conveyed in either direction. A
+lost response is recovered by retransmission, and use of the key by a second
+party is detected by the authorization server.
 
 --- middle
 
 # Introduction
 
-OAuth 2.0 Security Best Current Practice ({{Section 4.14.2 of RFC9700}})
-requires that refresh tokens issued to public clients be either
-sender-constrained or rotated on use. Sender-constraining in practice means
-DPoP {{RFC9449}} or mutual TLS {{RFC8705}}. Many clients implement neither, and
-so rely on rotation.
+## Refresh Token Rotation {#rotation}
 
-Rotation makes the token endpoint an exactly-once operation carried over a
-transport that offers at-most-once delivery. The authorization server
-invalidates the old refresh token when it issues the new one, but the new one
-exists only in a response that may never arrive. A client that retries with the
-token it still holds is presenting a superseded token, which is what reuse
-detection is designed to treat as theft.
+Refresh token rotation was first described in 2011, under the name "refresh
+token replacement", in the threat analysis later published as {{RFC6819}}. It
+is described in {{Section 5.2.2.3 of RFC6819}} and in {{Section 10.4 of
+RFC6749}}. The authorization server issues a new refresh token in each refresh
+response and invalidates the previous one while retaining a record of it.
 
-Grace periods reduce the frequency of this failure but keep the underlying
-design, in which the next secret travels from server to client in a response
-that may not arrive.
+The purpose of rotation is detection. If a refresh token is obtained by an
+attacker and is subsequently used by both the attacker and the legitimate
+client, one of them presents an invalidated refresh token. The authorization
+server cannot determine which party is legitimate, and revokes the grant.
 
-This document removes the server-to-client secret:
+Rotation was proposed for clients that cannot authenticate to the authorization
+server, for which no other means of noticing a second holder of a refresh token
+was available. {{Section 4.14.2 of RFC9700}} now requires an authorization
+server to either rotate or sender-constrain the refresh tokens it issues to
+public clients.
 
-- The refresh token does not rotate. It is a handle for the grant and is
-  useless without a proof.
-- The proof is a signature by a key the client generated. The private key never
-  crosses the wire, and where the platform allows it, never leaves a
-  non-extractable key store.
-- A counter in the signed content does the work rotation used to do. It
-  advances only when the client knows the previous value was consumed, so the
-  authorization server sees each value exactly once from an honest client and
-  can treat a conflicting second sighting as theft.
-- A nonce in the signed content lets the authorization server tell an honest
-  retry from a second party, and prevents a captured request from being used to
-  provoke revocation.
+## The Lost Response {#lost-response}
 
-A lost response therefore cannot desynchronize the client and the authorization
-server. This mechanism does not bind access tokens; {{comparison}} compares it
-with DPoP.
+Rotation requires the authorization server to invalidate a credential at the
+moment it issues the replacement, while the replacement exists only in a token
+response. If that response is not delivered, the client holds only the
+invalidated refresh token. A retry with that token is indistinguishable from
+the reuse that rotation is intended to detect, and the grant is revoked.
 
-## Terminology
+This weakness has been recognized since rotation was introduced. {{RFC6819}}
+notes that the measure may cause problems in clustered environments, because
+use of the currently valid refresh token must be ensured. {{FAPI2}} prohibits
+rotation except in extraordinary circumstances, citing the case in which a
+client cannot receive or store the new refresh token, and leaves the recovery
+mechanism out of scope. {{Section 11.33 of RFC9635}} describes the same failure
+for token rotation in GNAP.
+
+Deployed mitigations include accepting the previous refresh token for a period
+of time, accepting it until the new refresh token is first used, and returning
+the same new refresh token when the previous one is presented again. Each of
+these retains the authorization server as the origin of the next credential,
+and each weakens detection for as long as the previous credential remains
+acceptable.
+
+## Sender-Constrained Refresh Tokens {#sender-constrained}
+
+DPoP {{RFC9449}} binds a refresh token issued to a public client to a key held
+by that client. An authorization server that does so is not required to rotate
+the refresh token, and the failure described in {{lost-response}} does not
+arise.
+
+DPoP is a preventive measure. When the private key cannot be extracted from the
+client, a copy of the client's storage does not permit the refresh token to be
+used.
+
+DPoP does not provide detection. A DPoP proof carries no state that relates it
+to earlier proofs made with the same key. If the key is copied from a platform
+that does not offer non-extractable storage, or is used by an attacker
+executing within the client, the requests of the second party are
+indistinguishable from those of the client, and the authorization server
+receives no indication that two parties hold the key. The property that
+motivated rotation is therefore lost when rotation is replaced by
+sender-constraining. A deployment that requires both properties combines DPoP
+with rotation and reacquires the failure described in {{lost-response}}.
+
+## Design Goals {#goals}
+
+The mechanism defined in this document has the following goals.
+
+Detection:
+: Use of a grant by more than one party is detectable by the authorization
+  server, as it is with refresh token rotation.
+
+Minimal additional state:
+: The authorization server holds, for each grant, a public key, one counter and
+  a bounded record of recently accepted requests. The client holds a private
+  key, one counter and at most one pending request.
+
+No secrets on the wire:
+: No value sufficient to obtain an access token is conveyed in either
+  direction. The private key does not leave the client, and nothing required
+  for a subsequent request is conveyed in a token response.
+
+A consequence of the third goal is that the loss of a token response cannot
+leave the client unable to continue.
+
+The mechanism does not sender-constrain access tokens. It is intended for
+clients that do not implement DPoP, including clients that present access
+tokens to resource servers over protocols for which DPoP is not defined.
+
+## Conventions and Terminology
 
 {::boilerplate bcp14-tagged}
 
+"Base64url" denotes the URL-safe base64 encoding defined in {{Section 5 of
+RFC4648}}, without padding.
+
 Refresh key:
-: an asymmetric key pair generated by the client for one grant.
+: An asymmetric key pair generated by the client for one grant.
+
+Proof-bound refresh token:
+: A refresh token that the authorization server accepts only when accompanied
+  by a refresh proof.
 
 Refresh proof:
-: a signature made with the private refresh key over the refresh token, a
-  counter and a nonce.
+: A signature made with the private refresh key over a refresh token, a counter
+  and a nonce.
 
 Attempt:
-: one (counter, nonce) pair. Retransmissions of an attempt carry the same pair.
+: A counter value and a nonce value chosen by the client. Retransmissions of a
+  request carry the same attempt.
 
 Accepted attempt:
-: an attempt for which the authorization server issued an access token.
-
-Base64url:
-: the URL-safe encoding of {{Section 5 of RFC4648}}, with trailing padding
-  omitted.
+: An attempt for which the authorization server issued an access token.
 
 # Protocol Overview {#overview}
 
-The figure shows a code exchange followed by two refreshes, the second of which
-loses its response.
+{{fig-overview}} shows an authorization code exchange followed by three refresh
+requests. The response to the second refresh request is lost.
 
-~~~ ascii-art
+~~~
 +--------+                                          +---------------+
-|        |--(A) code, code_verifier, refresh_pub -->|               |
+|        |--(A) code, code_verifier, refresh_jwk -->|               |
 |        |<-(B) access_token, refresh_token --------|               |
 |        |                                          |               |
 |        |--(C) refresh_token, counter=1, nonce,    |               |
 |        |      proof ----------------------------->|               |
 |        |<-(D) access_token -----------------------|               |
 |        |                                          |               |
-| Client |--(E) refresh_token, counter=2, nonce',   | Authorization |
-|        |      proof' ---------------------------->|    Server     |
-|        |        X<-(F) access_token --------------|               |
+|        |--(E) refresh_token, counter=2, nonce2,   |               |
+| Client |      proof2 ---------------------------->| Authorization |
+|        |        X<-(F) access_token --------------|    Server     |
 |        |                                          |               |
-|        |--(G) refresh_token, counter=2, nonce',   |               |
-|        |      proof'' --------------------------->|               |
+|        |--(G) refresh_token, counter=2, nonce2,   |               |
+|        |      proof2b --------------------------->|               |
 |        |<-(H) error: duplicate_request -----------|               |
 |        |                                          |               |
-|        |--(I) refresh_token, counter=3, nonce'',  |               |
-|        |      proof''' -------------------------->|               |
+|        |--(I) refresh_token, counter=3, nonce3,   |               |
+|        |      proof3 ---------------------------->|               |
 |        |<-(J) access_token -----------------------|               |
 +--------+                                          +---------------+
 ~~~
-{: #fig-overview title="Code exchange, refresh, and recovery from a lost response"}
+{: #fig-overview title="Refresh with a Lost Response"}
 
-- (A) The client generates a refresh key and sends the public key with an
-  otherwise ordinary authorization code token request.
-- (B) The authorization server stores the public key with the grant and returns
-  an ordinary token response. The refresh token in it can be used only with a
-  proof.
-- (C, D) The client signs the refresh token, counter 1 and a fresh nonce. The
-  authorization server verifies the signature, sees the next counter in
-  sequence, and issues an access token. The refresh token is unchanged.
-- (E, F) The same again with counter 2, but the response is lost.
-- (G, H) The client retransmits the same attempt. The authorization server
-  recognizes the (counter, nonce) pair as one it already accepted and says so.
-  No access token is issued and nothing is revoked.
-- (I, J) The client now knows counter 2 was consumed, and proceeds with
-  counter 3.
+(A)
+: The client generates a refresh key and includes the public key in the
+  authorization code token request.
 
-Had the request at (E) been lost instead of the response at (F), the
-retransmission at (G) would simply have been accepted.
+(B)
+: The authorization server associates the public key with the grant and returns
+  a token response. The refresh token is proof-bound.
 
-## Comparison with Rotation and DPoP {#comparison}
+(C)
+: The client sends a refresh request containing counter value 1, a nonce and a
+  refresh proof.
 
-The table compares this mechanism with refresh token rotation as described in
-{{RFC9700}} and with DPoP-bound refresh tokens that are not also rotated.
-"Detected" means the grant is revoked at a later refresh; "prevented" means the
-attacker obtains nothing.
+(D)
+: The authorization server verifies the proof, determines that the counter is
+  the next in sequence, and issues an access token. The refresh token is
+  unchanged.
 
-| Threat | Rotation | Refresh proofs | DPoP-bound |
-| --- | --- | --- | --- |
-| Lost token response | User is logged out | No effect | No effect |
-| Replay of a captured refresh request | Detected | Prevented | Prevented |
-| Capture of the code exchange (request or response) | Attacker holds tokens | Refresh token unusable; access token as issued | Refresh token unusable; access token as issued |
-| Offline copy of client storage, extractable key | Detected | Detected | Not detected |
-| Offline copy of client storage, non-extractable key | Detected | Prevented | Prevented |
-| Attacker executing in the client | Detected | Detected | Not detected |
-| Disclosure of the authorization server's grant store | Depends on token storage | Nothing usable | Nothing usable |
-{: #tab-comparison title="Comparison with rotation and DPoP-bound refresh tokens"}
+(E)
+: The client sends a refresh request containing counter value 2 and a new
+  nonce.
 
-DPoP {{RFC9449}} already binds refresh tokens issued to public clients to the
-DPoP key, and an authorization server that does so need not rotate them. A
-client that implements DPoP has no need of this document.
+(F)
+: The authorization server accepts the request, but the response is not
+  delivered.
 
-This document is for the client that does not. It requires one key generation
-and one signature per refresh, over three concatenated strings. There is no
-JWS, no `htu` or `htm` to canonicalize, no server-provided nonce, and no
-involvement of resource servers. In exchange it does less: access tokens remain
-bearer tokens. What it adds, relative to a DPoP-bound refresh token, is the
-counter, and with it detection of a key that has been copied or is being used
-by an attacker inside the client.
+(G)
+: The client retransmits the request with the same counter and nonce. The proof
+  may differ, because the client may compute the signature again.
 
-Whether the counter would be better specified as an extension to DPoP is an
-open question ({{open-issues}}).
+(H)
+: The authorization server determines that the counter and nonce are those of
+  an attempt it has already accepted, and returns the `duplicate_request`
+  error. No access token is issued and the grant is unchanged.
 
-# Establishing the Refresh Key {#establishing}
+(I), (J)
+: The client, having established that counter value 2 was accepted, sends a
+  refresh request containing counter value 3 and a new nonce, which the
+  authorization server accepts.
+
+If the request in (E) had been lost instead of the response in (F), the
+authorization server would have accepted the request in (G).
+
+# Authorization Code Grant {#code-grant}
 
 ## Token Request {#token-request}
 
-A client that wants a proof-bound refresh token generates a new ECDSA key pair
-on the P-256 curve {{FIPS186-5}} and adds the following parameter to an
-authorization code token request ({{Section 4.1.3 of RFC6749}}):
+A client requesting a proof-bound refresh token generates a refresh key and
+adds the following parameter to the token request defined in {{Section 4.1.3 of
+RFC6749}}.
 
-`refresh_pub`:
-: REQUIRED for this specification. The public refresh key, as the 65-octet
-  uncompressed elliptic curve point (`0x04 || X || Y`,
-  {{SEC1}}, Section 2.3.3), base64url encoded.
+refresh_jwk:
+: REQUIRED. The public refresh key, as a JSON Web Key {{RFC7517}}. The JWK MUST
+  contain an `alg` member whose value is an asymmetric digital signature
+  algorithm registered for use with JWS {{RFC7518}}, and which the
+  authorization server supports ({{metadata}}). The JWK MUST NOT contain
+  private key parameters.
 
-The client MUST generate a new key pair for each authorization and MUST NOT use
-the key for any other purpose. The client SHOULD generate the private key as
-non-extractable where the platform supports it.
+The algorithm used for all refresh proofs under the grant is the one identified
+by the `alg` member. No separate algorithm parameter is defined.
+
+A client MUST generate a new refresh key for each grant. A client SHOULD
+generate the key such that the private key cannot be exported from the platform
+facility that holds it, where such a facility is available.
+
+The mechanism is defined for use with PKCE {{RFC7636}}. The authorization
+server MUST NOT issue a proof-bound refresh token in response to a request that
+does not contain a valid `code_verifier`.
 
 ## Token Response {#token-response}
 
-The authorization server MUST reject the request with `invalid_request` if
-`refresh_pub` is not a valid P-256 public key.
+The authorization server MUST reject a request containing a `refresh_jwk` value
+that is not a well-formed JWK, that omits `alg`, that identifies an unsupported
+algorithm, that is inconsistent with the identified algorithm, or that contains
+private key parameters. The error code is `invalid_request`.
 
-Otherwise, having validated the request as usual, the authorization server
-stores the public key with the grant, sets the grant's last accepted counter to
-zero, and returns an ordinary token response ({{Section 5.1 of RFC6749}}). The
-refresh token in that response is proof-bound: it can be used only as described
-in {{using}}.
+Otherwise the authorization server associates the public key with the grant,
+sets the grant's counter to zero, and returns a token response as defined in
+{{Section 5.1 of RFC6749}}. The response is unchanged by this document. A
+refresh token included in the response is proof-bound.
 
-# Using the Refresh Token {#using}
+The response does not indicate that the refresh token is proof-bound. A client
+determines whether the authorization server supports the mechanism from
+authorization server metadata ({{metadata}}) before sending `refresh_jwk`.
+
+This mechanism does not make the authorization code exchange retryable. A
+client that does not receive this response repeats the authorization request.
+
+# Refreshing an Access Token {#refreshing}
 
 ## Refresh Request {#refresh-request}
 
-A refresh request for a proof-bound refresh token is a request as described in
-{{Section 6 of RFC6749}}, with three additional parameters:
+A client presenting a proof-bound refresh token adds the following parameters
+to the request defined in {{Section 6 of RFC6749}}.
 
-`refresh_counter`:
-: REQUIRED. A positive integer in base 10 with no leading zeros, sign or other
-  decoration. The first attempt for a grant uses 1.
+refresh_counter:
+: REQUIRED. A positive integer in decimal notation without leading zeros. Its
+  value is one greater than the counter of the client's most recent accepted
+  attempt, or 1 if there has been none.
 
-`refresh_nonce`:
-: REQUIRED. Between 16 and 64 characters from the base64url alphabet, generated
-  with at least 128 bits of entropy.
+refresh_nonce:
+: REQUIRED. A value generated by the client with at least 128 bits of entropy,
+  base64url encoded. The client generates a new value for each attempt and
+  reuses it for every retransmission of that attempt.
 
-`refresh_proof`:
-: REQUIRED. The refresh proof described in {{refresh-proof}}.
+refresh_proof:
+: REQUIRED. The refresh proof, computed as described in {{refresh-proof}}.
 
 ## Refresh Proof {#refresh-proof}
 
-The signing input is the ASCII octets of the following concatenation, where `.`
-is a single period:
+The signing input is the ASCII string formed by concatenating the refresh
+token, a period ("."), the value of `refresh_counter`, a period, and the value
+of `refresh_nonce`:
 
 ~~~
-refresh_token "." refresh_counter "." refresh_nonce
+signing-input = refresh_token "." refresh_counter "." refresh_nonce
 ~~~
 
-The proof is an ECDSA signature over the signing input using P-256 and SHA-256,
-computed with the private refresh key and base64url encoded.
+The values are those of the request parameters before form encoding.
+
+The refresh proof is the signature over the signing input, made with the
+private refresh key and the algorithm identified in `refresh_jwk`, in the
+signature format that {{RFC7518}} or the algorithm's registration specifies for
+JWS, base64url encoded. For `ES256` this is the 64-octet concatenation of R and
+S.
+
+A client MAY compute a new signature when retransmitting an attempt. Signatures
+made with a randomized algorithm will differ between retransmissions; the
+counter and nonce MUST NOT.
 
 ## Authorization Server Processing {#as-processing}
 
-The authorization server processes a refresh request for a proof-bound refresh
-token in this order.
+The authorization server holds, for each grant, the public refresh key, the
+counter of the most recent accepted attempt (`last`), and the counter and nonce
+of one or more recent accepted attempts.
 
-1. **Grant.** If the refresh token is unknown, expired or revoked, respond with
-   `invalid_grant`.
-2. **Syntax.** If any of the three parameters is absent or malformed, respond
-   with `invalid_request`. A request without a proof MUST NOT be honoured: a
-   proof-bound refresh token is never a bearer token.
-3. **Signature.** Verify the proof against the stored public key. If
-   verification fails, respond with `invalid_grant`. The authorization server
-   MUST NOT revoke the grant on a failed verification: the refresh token is not
-   secret, so anyone who had seen it could otherwise force revocation.
-4. **Sequence.** Let `last` be the grant's last accepted counter. As a single
-   atomic operation on the grant:
+On receiving a refresh request for a proof-bound refresh token, the
+authorization server performs the following steps in order.
 
-   - If the counter equals `last + 1`, record the counter as `last`, retain the
-     (counter, nonce) pair, and issue an access token.
-   - Otherwise, if the (counter, nonce) pair is one the authorization server
-     has retained, respond with the `duplicate_request` error
-     ({{duplicate-request}}). No token is issued and the grant is unchanged.
-   - Otherwise, revoke the grant, including outstanding access tokens where
-     that is possible, and respond with `invalid_grant`.
+1. If `refresh_counter`, `refresh_nonce` or `refresh_proof` is absent or
+   malformed, reject the request with `invalid_request`.
+2. Verify the refresh proof using the public refresh key. If verification
+   fails, reject the request with `invalid_grant`. The grant MUST NOT be
+   revoked and its state MUST NOT change.
+3. If `refresh_counter` equals `last` + 1, accept the request: set `last` to
+   `refresh_counter`, retain the counter and nonce as an accepted attempt, and
+   issue an access token ({{success}}).
+4. Otherwise, if `refresh_counter` and `refresh_nonce` equal those of a
+   retained accepted attempt, reject the request with `duplicate_request`
+   ({{duplicate-request}}). The grant's state MUST NOT change.
+5. Otherwise, revoke the grant and reject the request with `invalid_grant`.
 
-The third branch is the theft signal. A valid signature over a counter the
-authorization server has already moved past, with a nonce it does not
-recognize, can only have been made by a second holder of the private key.
+Step 5 is reached only by a request that carries a valid proof and is out of
+sequence. Such a request was made by a holder of the private key that does not
+share the state of the party whose attempts were accepted. This is the
+condition that refresh token rotation is intended to detect.
 
-A successful response is as described in {{Section 5.1 of RFC6749}}. It MUST
-NOT contain a `refresh_token` parameter with a value different from the one
-presented, and SHOULD omit the parameter.
+Step 2 precedes any change of state so that a party without the private key,
+including one that holds the refresh token, cannot cause the grant to be
+revoked.
 
-The authorization server MUST retain the most recently accepted pair, and
-SHOULD retain accepted pairs for at least as long as a request could plausibly
-remain in flight; a few minutes is suggested. A duplicate that arrives after
-its pair has been discarded falls into the third branch and revokes the grant.
+Steps 2 through 5 MUST be performed atomically with respect to other requests
+for the same grant. This document assumes an authorization server that provides
+this consistency, and does not define a tolerance for counters other than
+`last` + 1.
+
+The authorization server MUST retain the most recent accepted attempt and MAY
+retain earlier ones. The effect of the number retained is discussed in
+{{retention}}.
+
+## Successful Response {#success}
+
+The response is as defined in {{Section 5.1 of RFC6749}}. The authorization
+server MUST NOT include a `refresh_token` parameter. The proof-bound refresh
+token remains valid until the grant expires or is revoked.
 
 ## The duplicate_request Error {#duplicate-request}
 
-This document defines one new error code for the token endpoint:
+This document defines the following error code for use in the error response
+defined in {{Section 5.2 of RFC6749}}.
 
-`duplicate_request`:
-: The request repeats an attempt that the authorization server has already
-  accepted. The client should consider that attempt consumed and proceed with
-  the next counter.
+duplicate_request:
+: The request is a retransmission of an attempt that the authorization server
+  has already accepted. No access token is issued. The client's counter is to
+  be advanced past that attempt.
 
-It is returned with HTTP status 400 in the usual error response format
-({{Section 5.2 of RFC6749}}).
+The access token issued for the original request is not returned again. The
+authorization server therefore retains no token material in order to answer a
+retransmission.
 
-An authorization server could instead answer a duplicate by issuing another
-access token, saving a round trip. It MUST NOT do so, because a duplicate is
-exactly what a replayed capture looks like.
+# Client Requirements {#client}
 
-# Client Behaviour {#client-behaviour}
+The client holds, for each grant, the refresh token, the private refresh key,
+the counter of its most recent accepted attempt, and at most one pending
+attempt.
 
-The properties described in this document depend on the following client
-behaviour.
+The client MUST store the counter and nonce of an attempt durably before
+sending the first request for it. A client that restarts while an attempt is
+pending MUST resume that attempt with the stored counter and nonce.
 
-## Persist Before Sending {#persist}
+The client retransmits a pending attempt, unchanged in counter and nonce, until
+it receives one of the following.
 
-The client maintains, per grant, the counter of its last consumed attempt and
-at most one pending attempt. Before sending a new attempt, the client MUST
-durably store the pending (counter, nonce) pair. The proof itself need not be
-stored; ECDSA signatures are randomized, and a freshly computed proof over the
-same pair is equally acceptable.
+- A successful response. The client records the attempt as accepted and uses
+  the access token.
+- A `duplicate_request` error. The client records the attempt as accepted and
+  begins a new attempt, with the next counter value and a new nonce, to obtain
+  an access token.
+- An `invalid_grant` or `invalid_client` error. The grant is no longer usable.
+  The client discards its state and repeats the authorization request.
 
-## Retransmit the Same Attempt {#retransmit}
+The client MUST treat any other outcome as a lost response. This includes
+connection failures, timeouts, responses with a 5xx or 429 status code,
+responses generated by intermediaries, and responses with a 200 status code
+that cannot be parsed as a token response. The client SHOULD apply a delay that
+increases between retransmissions.
 
-While an attempt is pending, every refresh request the client sends for that
-grant MUST carry that attempt's counter and nonce. The client treats the
-following as a lost response and retransmits, with suitable backoff:
+The client MUST NOT have more than one attempt outstanding for a grant. Where
+several execution contexts share a grant, such as multiple browser tabs or
+processes, they MUST serialize refresh requests. Two contexts that each send
+the next counter value with different nonces are indistinguishable from two
+holders of the key, and the grant is revoked.
 
-- a connection failure or timeout;
-- any 5xx status;
-- a response that cannot be parsed, or that is successful in status but lacks
-  the required members;
-- any error other than `invalid_grant`, `invalid_client` and
-  `duplicate_request`. This includes rate limiting and error responses
-  generated by intermediaries.
+# Authorization Server Metadata {#metadata}
 
-A client that gives up for the moment keeps the pending attempt and resumes
-with it later, including after a restart.
+This document defines the following authorization server metadata {{RFC8414}}
+parameter.
 
-## Advance Only on Knowledge {#advance}
+refresh_proof_alg_values_supported:
+: A JSON array of JWS `alg` values that the authorization server supports for
+  refresh proofs. Presence of this parameter indicates support for this
+  document.
 
-The client records an attempt as consumed, and clears the pending attempt, only
-when:
+An authorization server that supports this document MUST support `ES256`.
 
-- it has received and stored a successful response, or
-- it has received `duplicate_request`.
-
-After `duplicate_request` the client has no access token to show for the
-attempt, so it immediately begins a new attempt with the next counter and a new
-nonce.
-
-On `invalid_grant` or `invalid_client` the client discards the grant. Nothing
-else is terminal.
-
-## One Attempt at a Time {#one-at-a-time}
-
-The client MUST ensure that at most one refresh is in progress per grant across
-every thread, process, tab or window that shares the grant's storage. Two
-contexts that each read the same counter and each mint a nonce will present the
-authorization server with the theft signal described in {{as-processing}}, and
-the grant will be revoked.
+A client MUST NOT send `refresh_jwk` to an authorization server that does not
+publish this parameter. An authorization server that does not implement this
+document ignores the unrecognized parameter and issues an ordinary refresh
+token, and the token response would give the client no indication of this.
 
 # Security Considerations {#security}
 
-## Captured Requests {#captured-requests}
+## Detection of a Second Key Holder {#second-holder}
 
-A refresh request contains the refresh token, a counter, a nonce and a
-signature over all three. An attacker who captures one, for instance from the
-logs of a TLS-terminating intermediary, can replay it and can do nothing else:
-the authorization server answers a replay of an accepted attempt with
-`duplicate_request`, and the attacker cannot produce a signature over any other
-counter or nonce.
+A party that obtains the private refresh key and the refresh token can obtain
+access tokens. When both that party and the client subsequently use the grant,
+one of them sends a counter value that is not `last` + 1, or sends `last` + 1
+after the other has done so with a different nonce, and the grant is revoked
+under step 5 of {{as-processing}}. Detection does not depend on the distance
+between the two parties' counters or on the number of accepted attempts the
+authorization server retains.
 
-The exception is an attacker who captures a request and also prevents it from
-reaching the authorization server. That attacker can deliver the request itself
-and will receive one access token. The client's retransmission then draws
-`duplicate_request` and the client proceeds normally. This is not detected.
-Preventing it would require binding the request to the transport.
+As with refresh token rotation, detection requires that both parties use the
+grant. If the client never refreshes again, the second party is not detected.
+If the second party's copy was made while the client had an attempt pending,
+both hold the same counter and nonce, and detection occurs at the following
+attempt.
 
-## Theft Detection and Its Limits {#theft-detection}
+## Key Storage {#key-storage}
 
-Two parties holding the same key and the same counter will, sooner or later,
-present the same counter with different nonces. The second to do so causes
-revocation. This is the same property refresh token rotation provides and it
-has the same weakness: an attacker who refreshes while the legitimate client is
-idle is undetected until the client returns.
+Whether a private key is extractable cannot be observed by the authorization
+server and is not required by this document. A non-extractable key prevents the
+theft of a usable credential from client storage. An extractable key does not,
+but its use by a second party is detected as described in {{second-holder}}.
+The mechanism is intended to provide detection in both cases and prevention in
+the first.
 
-If storage is copied while an attempt is pending, both parties hold the same
-pending pair. One is accepted, the other receives `duplicate_request`, and each
-then proceeds to the next counter with its own nonce. Detection therefore
-arrives one refresh later than it otherwise would, and each party obtains one
-further access token in the meantime.
+## Attacker Executing in the Client {#in-client}
 
-An attacker executing inside the client (cross-site scripting, say) can ask a
-non-extractable key to sign. Non-extractability confines the attack to the
-period of compromise; it does not prevent it.
+An attacker able to execute code in the client can use a non-extractable key to
+produce refresh proofs. Proofs produced for future counter values and used
+elsewhere are subject to the same detection as a copied key: each is valid for
+one counter value, and the attacker and the client cannot both have that
+counter value accepted. An attacker that prevents the client from refreshing is
+not detected. This document does not otherwise address an attacker in this
+position.
+
+## Captured Requests {#captured}
+
+A refresh request contains the refresh token and a refresh proof and does not
+contain a value from which a later proof can be computed. A party that captures
+a request, in transit or from a log, and replays it receives a
+`duplicate_request` error if the attempt is retained by the authorization
+server, and otherwise causes the grant to be revoked. It does not obtain an
+access token in either case.
+
+A party able to prevent a request from reaching the authorization server, and
+to submit it instead, obtains one access token. The client's retransmission
+then receives `duplicate_request` and the client proceeds; the event is not
+detected.
+
+A nonce is required in addition to the counter. If requests were identified by
+the counter alone, a retransmission by the client and a request for the same
+counter value from a second key holder could not be distinguished, and a second
+key holder could avoid detection by sending only counter values that the client
+had already used.
+
+## Retention of Accepted Attempts {#retention}
+
+A retransmission that arrives after its attempt is no longer retained is
+processed under step 5 of {{as-processing}} and causes the grant to be revoked,
+although only one party holds the key. This can occur when a request is delayed
+in the network until after the client has completed later attempts. An
+authorization server that retains only the most recent accepted attempt is
+exposed to this whenever a delayed request arrives after one further refresh.
+Retaining more accepted attempts reduces the exposure at a cost of one counter
+and nonce each. The appropriate number is an open issue ({{open-issues}}).
+
+## Access Tokens
+
+Access tokens issued under this mechanism are bearer tokens. This document does
+not alter their properties.
+
+# IANA Considerations
+
+This section is not yet written. See {{open-issues}}.
 
 --- back
 
 # Example {#example}
 
-One grant, from code exchange to a recovered lost response. The key and
-signatures are real and verify against the public key shown. The responses are
-illustrative. Line breaks inside values are for display only.
+The counters, nonces, proofs, keys and tokens below were produced by an
+implementation of this document using `ES256`. The client identifier and host
+are illustrative. Line breaks and the unencoded JWK are for display only.
+
+Authorization code exchange:
 
 ~~~
-# Code exchange: register the public key.
+POST /token HTTP/1.1
+Host: as.example
+Content-Type: application/x-www-form-urlencoded
 
-POST /token
-  grant_type=authorization_code
-  client_id=app
-  code=i9aa_UbUHSIwX_3rnb_Jyw
-  code_verifier=pKRFjmAIOwcsbHrG5UMLj0rVg0YtximebMTtZW2fcpo
-  redirect_uri=https://app.example/cb
-  refresh_pub=BPA5CdTORvBMgWTzXE9MB0X7U9Lxx0r95AE2VMwQCqg5Y2fl7O6UGJ
-              D8DEaPm0ho46P6jztsQlcYxYhJ5Qqnuhc
+grant_type=authorization_code
+&client_id=s6BhdRkqt3
+&code=R1Kvwmneckl-K_N0aSE1nw
+&code_verifier=HhICLMoSdtQ2Jpp4Ie1Q6W569MFAfD-50GllSDLMZas
+&refresh_jwk={"alg":"ES256","kty":"EC","crv":"P-256",
+  "x":"ptCw10qYlRF7bP1I3SFDFpX8bl7EsnXropZ2NeVWJKA",
+  "y":"gi8uJaogtP5Xyjtv_PSXA0EET1wkni9pyIJrJbFXOz0"}
 
-200 {"access_token":"2YotnFZFEjr1zCsicMWpAA",
-     "token_type":"Bearer","expires_in":600,
-     "refresh_token":"oYmn5yIe5ez3y5hsJkajPTl1W3B7gjwIB7LbkLRohDk"}
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: no-store
 
-# Refresh, counter 1. Signing input:
-#   oYmn5yIe5ez3y5hsJkajPTl1W3B7gjwIB7LbkLRohDk.1.lZxgLFHMUrz3MvtZ14GF_w
+{
+  "access_token": "dC00HpPoxcMTv0Of75fOMrjCpSjj9im6jNtW1qUw9cQ",
+  "token_type": "Bearer",
+  "expires_in": 300,
+  "refresh_token": "U-Oz88d4L4Hygk-uUTR8O2cYAGqH49GNrKsG5dYGq8A"
+}
+~~~
 
-POST /token
-  grant_type=refresh_token
-  client_id=app
-  refresh_token=oYmn5yIe5ez3y5hsJkajPTl1W3B7gjwIB7LbkLRohDk
-  refresh_counter=1
-  refresh_nonce=lZxgLFHMUrz3MvtZ14GF_w
-  refresh_proof=DD0KfNFW2roiDffShIj64XxAmJGrk32WkNMmp4dArullkLVMHCQZm1
-                1dKIoRdoGkKOozR4yzpHNBblnivtEq3A
+Second refresh. The signing input is:
 
-200 {"access_token":"P8NgAGKHqv7QUEw555LDbpUyY-RBObDR4YG-CL1wFEY",
-     "token_type":"Bearer","expires_in":600}
+~~~
+U-Oz88d4L4Hygk-uUTR8O2cYAGqH49GNrKsG5dYGq8A.2.XqZLPBvDCTCwLUi3rFCENQ
+~~~
 
-# Refresh, counter 2. The AS accepts it; the response is lost.
+The authorization server accepts the request and the response is lost.
 
-POST /token
-  grant_type=refresh_token
-  client_id=app
-  refresh_token=oYmn5yIe5ez3y5hsJkajPTl1W3B7gjwIB7LbkLRohDk
-  refresh_counter=2
-  refresh_nonce=M_RTesmwhOkhr4ArD5xGEQ
-  refresh_proof=Nj29r5X6komZUrWQTz3KxdZt16eO51VygXTnf2BflkufMSUg8DvwBO
-                M2QF25SzVSbqsZy7EbkokbpaujcDyQ9Q
+~~~
+POST /token HTTP/1.1
+Host: as.example
+Content-Type: application/x-www-form-urlencoded
 
-(no response received)
+grant_type=refresh_token
+&client_id=s6BhdRkqt3
+&refresh_token=U-Oz88d4L4Hygk-uUTR8O2cYAGqH49GNrKsG5dYGq8A
+&refresh_counter=2
+&refresh_nonce=XqZLPBvDCTCwLUi3rFCENQ
+&refresh_proof=HOBS7NcxRTvLWeDBVvAC7Ww2-txlc8uzgeRlsc3QUYfP
+  PYUqz6RgEphQ9NGmR37_PFyRzxEtQX8k1-rajUP64A
+~~~
 
-# Retransmission: same counter and nonce. The client re-signs, so the
-# proof octets differ.
+Retransmission, with the same counter and nonce and a new signature:
 
-POST /token
-  grant_type=refresh_token
-  client_id=app
-  refresh_token=oYmn5yIe5ez3y5hsJkajPTl1W3B7gjwIB7LbkLRohDk
-  refresh_counter=2
-  refresh_nonce=M_RTesmwhOkhr4ArD5xGEQ
-  refresh_proof=(a fresh signature over the same input)
+~~~
+POST /token HTTP/1.1
+Host: as.example
+Content-Type: application/x-www-form-urlencoded
 
-400 {"error":"duplicate_request"}
+grant_type=refresh_token
+&client_id=s6BhdRkqt3
+&refresh_token=U-Oz88d4L4Hygk-uUTR8O2cYAGqH49GNrKsG5dYGq8A
+&refresh_counter=2
+&refresh_nonce=XqZLPBvDCTCwLUi3rFCENQ
+&refresh_proof=UH30pDbEnXQwlKFvC1jvXg-833c7WUt0PJNack1XuvhA
+  h3Hdq-GosFRVP-sOb4xvyyBrdRvS9oZ0jpAfCF99Hw
 
-# Counter 2 is known to be consumed. Next attempt.
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Cache-Control: no-store
 
-POST /token
-  grant_type=refresh_token
-  client_id=app
-  refresh_token=oYmn5yIe5ez3y5hsJkajPTl1W3B7gjwIB7LbkLRohDk
-  refresh_counter=3
-  refresh_nonce=HlbePMcpunkMH8Jp7eekDw
-  refresh_proof=Xej7iclBC0hJm3AXa2QhPfGgTBOo7VzZ8hjA4uqMwKOW3nByYYiuIb
-                b1_PvmkuR1aF516fNBaLy8YQxH0mZC8A
+{ "error": "duplicate_request" }
+~~~
 
-200 {"access_token":"zaG7uKGCJACz7SloYUnDlMr2vXe7Siq2NOQgqzn-ctA",
-     "token_type":"Bearer","expires_in":600}
+Third refresh, with the same refresh token:
+
+~~~
+POST /token HTTP/1.1
+Host: as.example
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=refresh_token
+&client_id=s6BhdRkqt3
+&refresh_token=U-Oz88d4L4Hygk-uUTR8O2cYAGqH49GNrKsG5dYGq8A
+&refresh_counter=3
+&refresh_nonce=fVau5zDbypNY0HG2-L9f9Q
+&refresh_proof=-mbTVv5kFRmSsHy8b0hLjWweSqXXT0TqrlsseUzHjTCM
+  0f9PK0Gfs1lPRHWIp8JtK4cZK26qcwhXjB4q6tLYgA
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: no-store
+
+{
+  "access_token": "uFEuw4Q3mLAtPStnHxSACEutwwsZ7YZi-YOd5KQcnqI",
+  "token_type": "Bearer",
+  "expires_in": 300
+}
+~~~
+
+After the client's fourth refresh is accepted, a second holder of the key sends
+counter value 4 with its own nonce. The proof is valid, the counter is not
+`last` + 1, and the nonce does not match the retained attempt. The grant is
+revoked, and the client's fifth refresh also receives `invalid_grant`.
+
+~~~
+POST /token HTTP/1.1
+Host: as.example
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=refresh_token
+&client_id=s6BhdRkqt3
+&refresh_token=U-Oz88d4L4Hygk-uUTR8O2cYAGqH49GNrKsG5dYGq8A
+&refresh_counter=4
+&refresh_nonce=fDhO-9XRuqf5a0N0w4OZBw
+&refresh_proof=PCcqw3EvPQBuaMAmYQNF97Z_Cf2z4TcL7-KxW3jsotr-
+  l_4n1xa8ZDXpX5eG7fqp0BcoQ4_FHcnW5Q56Fc3FCA
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Cache-Control: no-store
+
+{ "error": "invalid_grant" }
 ~~~
 
 # Open Issues {#open-issues}
 
-1. **Lost code exchange response.** Not addressed. The client restarts the
-   authorization. An idempotent retry of the code exchange is possible.
-2. **Discovery.** Nothing tells a client that the authorization server supports
-   this, or that the refresh token it received is proof-bound. A server that
-   ignores `refresh_pub` returns an ordinary bearer refresh token.
-3. **Algorithm agility.** The encodings are specific to P-256. Is one algorithm
-   enough?
-4. **Retention window.** {{as-processing}} suggests "a few minutes". Should
-   there be a normative minimum?
-5. **Other grants.** Only the authorization code grant is covered.
-6. **Should this be a DPoP extension?** A counter and nonce in a DPoP proof at
-   the token endpoint would give DPoP clients the same detection property.
-7. **Missing sections.** Key storage guidance, denial of service, authorization
-   server consistency requirements, metadata and IANA registrations are not yet
-   written.
-8. **Names.** All parameter names are placeholders.
+This document is an early draft. The following are known to be unresolved, and
+comment is invited on each.
+
+Retention:
+: How many accepted attempts an authorization server is to retain, and whether
+  the number is to be specified or left to deployment ({{retention}}).
+
+Lost code exchange response:
+: The authorization code exchange is not retryable. The same key could be used
+  to make it so.
+
+Other grants:
+: Only the authorization code grant is covered.
+
+Algorithms:
+: Only `ES256` is mandatory. Whether a second algorithm is to be required, and
+  how a grant moves to a new key or algorithm, are not addressed.
+
+Relationship to DPoP:
+: Whether the counter and nonce could be carried as claims in a DPoP proof for
+  clients that implement DPoP, giving those clients detection as well.
+
+Confidential clients:
+: Whether the mechanism is of use to clients that authenticate.
+
+Parameter names:
+: All names in this document are provisional.
+
+IANA considerations:
+: Not yet written.
