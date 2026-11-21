@@ -7,22 +7,22 @@
 //
 // Refresh request: refresh_token, refresh_counter (n), refresh_verifier, refresh_challenge (for n+1).
 //   n == current step, hash matches          accept
-//   n == current step, hash does not match   invalid_grant, no change (sender does not know the verifier)
 //   n retained, identical request            duplicate_request (no token, no change)
-//   anything else with a valid refresh token revoke: a retained step with different contents,
-//                                            an older step, or a step the AS has not reached
+//   anything else with a valid refresh token revoke: a wrong verifier, a retained step with different
+//                                            contents, an older step, or a step the AS has not reached
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 const b64u = (b) => Buffer.from(b).toString('base64url');
 const H = (s) => b64u(crypto.createHash('sha256').update(s).digest());
-const HASH = /^[A-Za-z0-9_-]{43}$/;
+const HASH = /^[A-Za-z0-9_-]{43}$/;               // a challenge: base64url SHA-256
+const VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;      // RFC 7636 code_verifier syntax
 
 export function createAS({ history = 8, codeTtlMs = 60_000, now = () => Date.now() } = {}) {
   const codes = new Map();   // code -> { challenge, expires, refresh_token }
   const grants = new Map();  // refresh_token -> { current, spent: Map<challenge, successor>, revoked }
-  const stats = { accessTokens: 0, duplicates: 0, revocations: 0, rejects: 0 };
+  const stats = { accessTokens: 0, duplicates: 0, revocations: 0 };
 
   const ok = (body) => ({ status: 200, body });
   const err = (error) => ({ status: 400, body: { error } });
@@ -56,13 +56,12 @@ export function createAS({ history = 8, codeTtlMs = 60_000, now = () => Date.now
   function refresh(p) {
     const g = grants.get(p.refresh_token);
     if (!g || g.revoked) return err('invalid_grant');
-    if (!/^[1-9][0-9]{0,15}$/.test(p.refresh_counter ?? '') || !HASH.test(p.refresh_verifier ?? '') || !HASH.test(p.refresh_challenge ?? ''))
+    if (!/^[1-9][0-9]{0,15}$/.test(p.refresh_counter ?? '') || !VERIFIER.test(p.refresh_verifier ?? '') || !HASH.test(p.refresh_challenge ?? ''))
       return err('invalid_request');
     const n = Number(p.refresh_counter);
     const h = H(p.refresh_verifier);
 
-    if (n === g.n) {
-      if (h !== g.current) { stats.rejects++; return err('invalid_grant'); }   // no verifier knowledge: no change
+    if (n === g.n && h === g.current) {
       g.spent.set(n, { challenge: g.current, successor: p.refresh_challenge });
       for (const k of g.spent.keys()) if (k <= n - history) g.spent.delete(k);
       g.n = n + 1;
@@ -71,7 +70,8 @@ export function createAS({ history = 8, codeTtlMs = 60_000, now = () => Date.now
     }
     const s = g.spent.get(n);
     if (s && s.challenge === h && s.successor === p.refresh_challenge) { stats.duplicates++; return err('duplicate_request'); }
-    revoke(g);                             // out of sequence: a second holder, or a step no longer retained
+    revoke(g);                             // wrong verifier, or out of sequence: a second holder,
+                                           // a leaked refresh token, or a step no longer retained
     return err('invalid_grant');
   }
 

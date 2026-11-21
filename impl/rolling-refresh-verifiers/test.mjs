@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAS, listen } from './server.mjs';
-import { createClient, pkcePair, H, TerminalError, TransientError } from './client.mjs';
+import { createClient, pkcePair, H, TerminalError, TransientError, RequestError } from './client.mjs';
 
 const clone = (v) => (v === null || typeof v !== 'object' ? v : Array.isArray(v) ? v.map(clone) : Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clone(x)])));
 class MemStore { data = undefined; load() { return clone(this.data); } save(s) { this.data = clone(s); } }
@@ -97,7 +97,7 @@ test('happy path, lost response and recovery; AS state stays bounded', async (t)
   const g = as.grant(rtOf(d.store));
   assert.equal(g.n, 8);                      // 7 accepted steps
   assert.equal(g.spent.size, 1);             // counter + current challenge + one previous step
-  assert.deepEqual({ ...as.stats }, { accessTokens: 8, duplicates: 1, revocations: 0, rejects: 0 });
+  assert.deepEqual({ ...as.stats }, { accessTokens: 8, duplicates: 1, revocations: 0 });
 });
 
 // ---- faults at refresh -------------------------------------------------------------------------
@@ -175,14 +175,13 @@ async function soak(t, { seed, history, flush, faultRate = 0.4, total = 1500 }) 
     }
     if (rnd() < flush) await net.flushDelayed();
   }
-  return { exchanges: net.calls, faults: net.log.filter((l) => l.mode !== 'ok').length, crashes, lockouts, duplicates: as.stats.duplicates, rejects: as.stats.rejects };
+  return { exchanges: net.calls, faults: net.log.filter((l) => l.mode !== 'ok').length, crashes, lockouts, duplicates: as.stats.duplicates };
 }
 
 for (const seed of [1, 2, 3, 4]) {
   test(`soak seed ${seed}: 1500 refreshes, 40% faulted, crashes, stalled requests landing before the next refresh`, async (t) => {
     const r = await soak(t, { seed, history: 8, flush: 1 });
     assert.equal(r.lockouts, 0);
-    assert.equal(r.rejects, 0);
     t.diagnostic(JSON.stringify(r));
   });
 }
@@ -263,25 +262,60 @@ test('any captured request replayed with a different next challenge revokes; a s
   }
 });
 
-test('refresh token alone: a guess at the current step is rejected with no change; malformed requests likewise', async (t) => {
+test('malformed requests are rejected with invalid_request and change nothing', async (t) => {
   const { as, net, newDevice, login } = await world(t);
   const d = newDevice(), c = d.client();
   await login(c);
   await c.refresh(); await c.refresh();
   const rt = rtOf(d.store), ch = await H('x');
   for (const p of [
-    req(rt, 3, V('guess'), ch),                                   // right step, no verifier knowledge
-    req(rt, 3, refreshes(net).at(-1).params.refresh_challenge, ch),   // the challenge is not its own preimage
     { ...req(rt, 3, V('guess'), ch), refresh_counter: '03' }, { ...req(rt, 3, V('guess'), ch), refresh_counter: '-1' },
-    { ...req(rt, 3, 'short', ch) }, { ...req(rt, 3, V('guess'), 'short') },
+    { ...req(rt, 3, 'short', ch) }, { ...req(rt, 3, V('guess'), 'short') }, { ...req(rt, 3, 'x'.repeat(129), ch) },
     { grant_type: 'refresh_token', refresh_token: rt },            // bearer use of the token
   ]) {
     const r = await net.send(p);
-    assert.equal(r.status, 400);
-    assert.equal(r.body.access_token, undefined);
+    assert.equal(r.body.error, 'invalid_request');
   }
   assert.equal(as.stats.revocations, 0);
   assert.ok(isAT(await c.refresh()));
+});
+
+test('refresh token alone: a wrong verifier at the current step revokes the grant', async (t) => {
+  for (const guess of ['junk', 'challenge']) {
+    const { as, net, newDevice, login } = await world(t);
+    const d = newDevice(), c = d.client();
+    await login(c);
+    await c.refresh(); await c.refresh();
+    const v = guess === 'junk' ? V('guess') : refreshes(net).at(-1).params.refresh_challenge;   // a challenge is not its own preimage
+    const r = await net.send(req(rtOf(d.store), 3, v, await H('x')));
+    assert.equal(r.body.error, 'invalid_grant');
+    assert.equal(r.body.access_token, undefined);
+    assert.equal(as.stats.revocations, 1, guess);
+    await assert.rejects(c.refresh(), TerminalError);
+  }
+});
+
+test('verifiers of any RFC 7636 length and alphabet are accepted', async (t) => {
+  const { as, net } = await world(t);
+  const { verifier, challenge } = await pkcePair();
+  const vs = ['a'.repeat(43), 'B-._~9'.repeat(12), 'z'.repeat(128)];
+  const login = await net.send({ grant_type: 'authorization_code', client_id: 'app', code: as.authorize(challenge), code_verifier: verifier, refresh_challenge: await H(vs[0]) });
+  const rt = login.body.refresh_token;
+  for (let i = 0; i < 2; i++) assert.ok(isAT((await net.send(req(rt, i + 1, vs[i], await H(vs[i + 1])))).body.access_token));
+  assert.equal(as.stats.revocations, 0);
+});
+
+test('a definitive error from the AS is surfaced once, not retried, and leaves the grant intact', async (t) => {
+  const { as, net, newDevice, login } = await world(t);
+  const d = newDevice(), c = d.client();
+  await login(c);
+  const real = net.send;
+  let hits = 0;
+  net.send = async (p) => (p.grant_type === 'refresh_token' && hits++ === 0 ? { status: 400, body: { error: 'invalid_scope' } } : real(p));
+  await assert.rejects(c.refresh(), RequestError);
+  assert.equal(hits, 1);
+  assert.ok(isAT(await c.refresh()));             // same pending request goes through afterwards
+  assert.equal(as.stats.revocations, 0);
 });
 
 test('refresh token alone: any other step number with a junk verifier revokes the grant', async (t) => {
@@ -331,6 +365,26 @@ for (const k of [0, 1, 2, 30])
   test(`hijacked request, attacker refreshes ${k} more times with one retained step: the client's retry revokes`, async (t) => {
     assert.deepEqual(await hijack(t, 1, k), { revocations: 1, attackerStillIn: false });
   });
+test('hijacked request with the response relayed to the client: the client\'s next refresh revokes', async (t) => {
+  // The attacker blocks the request, substitutes its own challenge, and hands the 200 back to the client,
+  // so the client advances and never retransmits.
+  const { as, net, newDevice, login } = await world(t, { history: 1 });
+  const d = newDevice(), c = d.client();
+  await login(c);
+  const real = net.send;
+  const mine = [V('attacker-0'), V('attacker-1')];
+  let stolen = null;
+  net.send = async (p) => {
+    if (p.grant_type !== 'refresh_token' || stolen) return real(p);
+    stolen = { ...p };
+    return real({ ...p, refresh_challenge: await H(mine[0]) });
+  };
+  assert.ok(isAT(await c.refresh()));             // client believes step 1 went through with its own challenge
+  await assert.rejects(c.refresh(), TerminalError);
+  assert.equal(as.stats.revocations, 1);
+  const r = await real(req(stolen.refresh_token, 2, mine[0], await H(mine[1])));
+  assert.equal(r.body.access_token, undefined);   // attacker is out too
+});
 test('KNOWN: a hijack is not detected if the client never refreshes again', async (t) => {
   assert.deepEqual(await hijack(t, 1, 3, false), { revocations: 0, attackerStillIn: true });
 });

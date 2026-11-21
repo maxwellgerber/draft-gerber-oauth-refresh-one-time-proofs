@@ -17,6 +17,7 @@ export const H = async (s) => b64u(await crypto.subtle.digest('SHA-256', enc(s))
 
 export class TerminalError extends Error {}   // grant is gone: restart authorization
 export class TransientError extends Error {}  // gave up for now: state intact, call again later
+export class RequestError extends Error {}    // the AS rejected this request with a definitive error: state intact, do not resend
 
 const TERMINAL = new Set(['invalid_grant', 'invalid_client']);
 
@@ -35,10 +36,11 @@ export function createClient({
     let res;
     try { res = await transport({ client_id: clientId, ...params }); } catch { return { kind: 'lost' }; }
     const body = res?.body;
-    if (!res || res.status >= 500 || !body || typeof body !== 'object') return { kind: 'lost' };
+    if (!res || res.status >= 500 || res.status === 429 || !body || typeof body !== 'object') return { kind: 'lost' };
     if (res.status === 200) return isComplete(body) ? { kind: 'ok', body } : { kind: 'lost' };
     if (TERMINAL.has(body.error)) return { kind: 'terminal', body };
     if (body.error === 'duplicate_request') return { kind: 'duplicate', body };
+    if (typeof body.error === 'string') return { kind: 'rejected', body };   // any other OAuth error: definitive
     return { kind: 'lost' };
   }
 
@@ -65,6 +67,7 @@ export function createClient({
         { grant_type: 'authorization_code', code, code_verifier: codeVerifier, redirect_uri: redirectUri, refresh_challenge },
         (b) => typeof b.refresh_token === 'string' && b.refresh_token.length > 0 && typeof b.access_token === 'string');
       if (r.kind === 'lost' || r.kind === 'duplicate') continue;
+      if (r.kind === 'rejected') throw new RequestError(r.body.error);
       if (r.kind === 'terminal') {
         state.setup = null;
         await store.save(state);
@@ -93,6 +96,7 @@ export function createClient({
         (b) => typeof b.access_token === 'string');
 
       if (r.kind === 'lost') { await sleep(Math.min(100 * 2 ** i, 5000)); continue; }  // resend identical
+      if (r.kind === 'rejected') throw new RequestError(r.body.error);                 // keep state, stop resending
       if (r.kind === 'terminal') {
         state.grant = null;
         await store.save(state);
