@@ -1,3 +1,4 @@
 # Automatically generated CODEOWNERS
 # Regenerate with `make update-codeowners`
 draft-gerber-oauth-refresh-one-time-proofs.md mgerber@twilio.com
+draft-gerber-oauth-rolling-refresh-verifiers.md mgerber@twilio.com

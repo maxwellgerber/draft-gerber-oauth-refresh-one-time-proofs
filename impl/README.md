@@ -1,20 +1,21 @@
-# Reference implementation
+# Reference implementations
 
-A small authorization server and client for
-draft-gerber-oauth-refresh-one-time-proofs, used to test the design under
-network faults and client crashes. Not production code.
+Small authorization servers and clients used to test the two drafts in this
+repository under network faults, client crashes and attacks. Not production
+code.
 
-- `server.mjs`: in-memory authorization server (`refresh_jwk`, counter and
-  nonce processing, metadata). ES256 and Ed25519.
-- `client.mjs`: client that runs unchanged in Node and in a browser
-  (WebCrypto, non-extractable keys by default).
-- `test.mjs`: fault injection, crash recovery, soak and attack tests.
-- `browser.html`, `browser_test.py`, `serve.mjs`: the same client in
-  Chromium, with IndexedDB storage and a Web Lock across tabs.
+- `one-time-proofs/`: draft-gerber-oauth-refresh-one-time-proofs (signed
+  counter and nonce; ES256 and Ed25519).
+- `rolling-refresh-verifiers/`: draft-gerber-oauth-rolling-refresh-verifiers
+  (counted hash chain; SHA-256 only).
+
+Each directory has the same layout: `server.mjs`, `client.mjs` (runs in Node
+and in a browser), `test.mjs`, and `browser.html`, `browser_test.py` and
+`serve.mjs` for the Chromium checks.
 
 ## Running
 
-Requires Node 22 or later.
+Requires Node 22 or later. In either directory:
 
     node --test test.mjs
 

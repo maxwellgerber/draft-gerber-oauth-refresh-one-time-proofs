@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>hash-chained refresh client</title>
+<script type="module">
+import { createClient, pkcePair, TerminalError, TransientError } from '/client.mjs';
+
+// Browser adapter: IndexedDB for durable state,
+// Web Locks for cross-tab serialization, fetch for transport.
+const db = new Promise((resolve, reject) => {
+  const r = indexedDB.open('oauth', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('kv');
+  r.onsuccess = () => resolve(r.result);
+  r.onerror = () => reject(r.error);
+});
+async function idb(mode, fn) {
+  const tx = (await db).transaction('kv', mode);
+  const req = fn(tx.objectStore('kv'));
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve(req.result);   // resolve on commit, not on request success
+    tx.onerror = tx.onabort = () => reject(tx.error);
+  });
+}
+const store = {
+  load: () => idb('readonly', (s) => s.get('state')),
+  save: (state) => idb('readwrite', (s) => s.put(state, 'state')),
+};
+const lock = (fn) => navigator.locks.request('oauth-refresh', fn);
+const transport = async (params) => {
+  const res = await fetch('/token', { method: 'POST', body: new URLSearchParams(params) });
+  let body; try { body = await res.json(); } catch {}
+  return { status: res.status, body };
+};
+
+const make = (extra = {}) => createClient({ store, lock, transport, clientId: 'app', ...extra });
+const wrap = async (p) => { try { return { ok: await p }; } catch (e) { return { error: e.constructor.name, message: e.message }; } };
+window.api = {
+  login: async (extra) => {
+    const { verifier, challenge } = await pkcePair();
+    const { code } = await (await fetch('/authorize', { method: 'POST', body: new URLSearchParams({ code_challenge: challenge }) })).json();
+    return wrap(make(extra).exchangeCode(code, verifier, location.origin + '/cb'));
+  },
+  resumeSetup: (extra) => wrap(make(extra).resumeSetup()),
+  refresh: (extra) => wrap(make(extra).refresh()),
+  inspect: async () => {
+    const s = await store.load();
+    return { hasGrant: !!s?.grant, hasSetup: !!s?.setup, pending: s?.grant?.next ?? null };
+  },
+};
+window.ready = true;
+</script>

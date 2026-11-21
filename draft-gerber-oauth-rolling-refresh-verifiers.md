@@ -1,0 +1,678 @@
+---
+title: OAuth 2.0 Rolling Refresh Verifiers
+abbrev: Rolling Refresh Verifiers
+category: exp
+docname: draft-gerber-oauth-rolling-refresh-verifiers-latest
+submissiontype: IETF
+v: 3
+area: "Security"
+workgroup: "Web Authorization Protocol"
+author:
+ - fullname: Maxwell Gerber
+   organization: Twilio
+   email: mgerber@twilio.com
+normative:
+  RFC4648:
+  RFC6749:
+  RFC7636:
+  RFC8414:
+informative:
+  RFC6819:
+  RFC9449:
+  RFC9635:
+  RFC9700:
+  FAPI2:
+    title: FAPI 2.0 Security Profile
+    target: https://openid.net/specs/fapi-security-profile-2_0-final.html
+    date: 2025-02
+    author:
+     - name: D. Fett
+     - name: D. Tonge
+     - name: J. Heenan
+    seriesinfo:
+      OpenID: Foundation
+...
+
+--- abstract
+
+Refresh token rotation was introduced so that an authorization server could
+detect the theft of a refresh token held by a public client. It fails when a
+token response is lost: the client retries with a superseded refresh token and
+the authorization server revokes the grant. Sender-constrained refresh tokens
+do not have this failure, but they provide no means of detecting that a key is
+in use by more than one party.
+
+This document defines a mechanism in which the client, each time it uses a
+refresh token, reveals a verifier for a challenge it registered earlier and
+registers a challenge for its next use, in the manner of PKCE. The refresh
+token is not rotated and the authorization server delivers nothing that the
+client needs for a later request. A lost response is recovered by
+retransmission, and use of the grant by a second party is detected by the
+authorization server. The mechanism requires no cryptography beyond SHA-256.
+
+--- middle
+
+# Introduction
+
+## Refresh Token Rotation {#rotation}
+
+Refresh token rotation was first described in 2011, under the name "refresh
+token replacement", in the threat analysis later published as {{RFC6819}}. It
+is described in {{Section 5.2.2.3 of RFC6819}} and in {{Section 10.4 of
+RFC6749}}. The authorization server issues a new refresh token in each refresh
+response and invalidates the previous one while retaining a record of it.
+
+The purpose of rotation is detection. If a refresh token is obtained by an
+attacker and is subsequently used by both the attacker and the legitimate
+client, one of them presents an invalidated refresh token. The authorization
+server cannot determine which party is legitimate, and revokes the grant.
+
+Rotation was proposed for clients that cannot authenticate to the authorization
+server, for which no other means of noticing a second holder of a refresh token
+was available. {{Section 4.14.2 of RFC9700}} now requires an authorization
+server to either rotate or sender-constrain the refresh tokens it issues to
+public clients.
+
+## The Lost Response {#lost-response}
+
+Rotation requires the authorization server to invalidate a credential at the
+moment it issues the replacement, while the replacement exists only in a token
+response. If that response is not delivered, the client holds only the
+invalidated refresh token. A retry with that token is indistinguishable from
+the reuse that rotation is intended to detect, and the grant is revoked.
+
+This weakness has been recognized since rotation was introduced. {{RFC6819}}
+notes that the measure may cause problems in clustered environments, because
+use of the currently valid refresh token must be ensured. {{FAPI2}} prohibits
+rotation except in extraordinary circumstances, citing the case in which a
+client cannot receive or store the new refresh token, and leaves the recovery
+mechanism out of scope. {{Section 11.33 of RFC9635}} describes the same failure
+for token rotation in GNAP.
+
+Deployed mitigations include accepting the previous refresh token for a period
+of time, accepting it until the new refresh token is first used, and returning
+the same new refresh token when the previous one is presented again. Each of
+these retains the authorization server as the origin of the next credential,
+and each weakens detection for as long as the previous credential remains
+acceptable.
+
+## Sender-Constrained Refresh Tokens {#sender-constrained}
+
+DPoP {{RFC9449}} binds a refresh token issued to a public client to a key held
+by that client. An authorization server that does so is not required to rotate
+the refresh token, and the failure described in {{lost-response}} does not
+arise.
+
+DPoP is a preventive measure. When the private key cannot be extracted from the
+client, a copy of the client's storage does not permit the refresh token to be
+used.
+
+DPoP does not provide detection. A DPoP proof carries no state that relates it
+to earlier proofs made with the same key. If the key is copied from a platform
+that does not offer non-extractable storage, or is used by an attacker
+executing within the client, the requests of the second party are
+indistinguishable from those of the client, and the authorization server
+receives no indication that two parties hold the key. The property that
+motivated rotation is therefore lost when rotation is replaced by
+sender-constraining. A deployment that requires both properties combines DPoP
+with rotation and reacquires the failure described in {{lost-response}}.
+
+
+## Design Goals {#goals}
+
+The mechanism defined in this document has the following goals.
+
+Detection:
+: Use of a grant by more than one party is detectable by the authorization
+  server, as it is with refresh token rotation.
+
+Minimal additional state:
+: The authorization server holds, for each grant, a step number, one challenge
+  and a bounded record of recently accepted requests. The client holds a step
+  number, one verifier and at most one pending verifier.
+
+Nothing delivered by the authorization server:
+: Every value the client needs for a later request is generated by the client.
+  The loss of a token response therefore cannot leave the client unable to
+  continue.
+
+No new cryptography:
+: The only primitive is SHA-256, which clients and authorization servers that
+  implement PKCE {{RFC7636}} already have.
+
+The mechanism does not sender-constrain access tokens, and it does not prevent
+the use of a credential copied from client storage; it detects such use. A
+companion proposal, "OAuth 2.0 One-Time Refresh Proofs"
+(draft-gerber-oauth-refresh-one-time-proofs), has the same structure but uses a
+signature in place of the verifier, which permits a non-extractable key.
+{{comparison}} compares the two.
+
+## Conventions and Terminology
+
+{::boilerplate bcp14-tagged}
+
+"Base64url" denotes the URL-safe base64 encoding defined in {{Section 5 of
+RFC4648}}, without padding.
+
+Step:
+: A positive integer identifying a position in the sequence of refresh requests
+  for a grant. The first refresh request is step 1.
+
+Refresh verifier:
+: A high-entropy random string generated by the client for one step.
+
+Refresh challenge:
+: The value computed from a step number and that step's refresh verifier as
+  described in {{challenge}}.
+
+Verifier-bound refresh token:
+: A refresh token that the authorization server accepts only when accompanied
+  by the refresh verifier for the current step.
+
+# Protocol Overview {#overview}
+
+{{fig-overview}} shows an authorization code exchange followed by three refresh
+requests. The response to the second refresh request is lost. In the figure, v1
+is the refresh verifier for step 1 and c1 is the corresponding refresh
+challenge.
+
+~~~
++--------+                                          +---------------+
+|        |--(A) code, code_verifier, c1 ----------->|               |
+|        |<-(B) access_token, refresh_token --------|               |
+|        |                                          |               |
+|        |--(C) refresh_token, 1, v1, c2 ---------->|               |
+|        |<-(D) access_token -----------------------|               |
+|        |                                          |               |
+| Client |--(E) refresh_token, 2, v2, c3 ---------->| Authorization |
+|        |        X<-(F) access_token --------------|    Server     |
+|        |                                          |               |
+|        |--(G) refresh_token, 2, v2, c3 ---------->|               |
+|        |<-(H) error: duplicate_request -----------|               |
+|        |                                          |               |
+|        |--(I) refresh_token, 3, v3, c4 ---------->|               |
+|        |<-(J) access_token -----------------------|               |
++--------+                                          +---------------+
+~~~
+{: #fig-overview title="Refresh with a Lost Response"}
+
+(A)
+: The client generates the refresh verifier for step 1 and includes the
+  corresponding refresh challenge in the authorization code token request.
+
+(B)
+: The authorization server associates the challenge with the grant and returns
+  a token response. The refresh token is verifier-bound.
+
+(C)
+: The client generates the refresh verifier for step 2. It sends a refresh
+  request containing the step number 1, the refresh verifier for step 1 and the
+  refresh challenge for step 2.
+
+(D)
+: The authorization server verifies that the verifier matches the challenge it
+  holds, replaces that challenge with the one for step 2, and issues an access
+  token. The refresh token is unchanged.
+
+(E)
+: The client sends a refresh request for step 2, containing the refresh
+  challenge for step 3.
+
+(F)
+: The authorization server accepts the request, but the response is not
+  delivered.
+
+(G)
+: The client retransmits the request unchanged.
+
+(H)
+: The authorization server determines that the request is identical to one it
+  has already accepted, and returns the `duplicate_request` error. No access
+  token is issued and the grant is unchanged.
+
+(I), (J)
+: The client, having established that step 2 was accepted, sends a refresh
+  request for step 3, which the authorization server accepts.
+
+If the request in (E) had been lost instead of the response in (F), the
+authorization server would have accepted the request in (G).
+
+# Refresh Challenge {#challenge}
+
+A refresh verifier is generated in the manner of the PKCE `code_verifier`
+({{Section 4.1 of RFC7636}}) and MUST contain at least 256 bits of entropy.
+
+The refresh challenge for step n is computed from the decimal representation of
+n, without leading zeros, and the refresh verifier for step n:
+
+~~~
+refresh_challenge = BASE64URL(SHA256(ASCII(n "." refresh_verifier)))
+~~~
+
+# Authorization Code Grant {#code-grant}
+
+A client requesting a verifier-bound refresh token generates the refresh
+verifier for step 1 and adds the following parameter to the token request
+defined in {{Section 4.1.3 of RFC6749}}.
+
+refresh_challenge:
+: REQUIRED. The refresh challenge for step 1.
+
+The mechanism is defined for use with PKCE {{RFC7636}}. The authorization
+server MUST NOT issue a verifier-bound refresh token in response to a request
+that does not contain a valid `code_verifier`.
+
+The authorization server associates the challenge with the grant, sets the
+grant's step number to 1, and returns a token response as defined in {{Section
+5.1 of RFC6749}}. The response is unchanged by this document. A refresh token
+included in the response is verifier-bound.
+
+The response does not indicate that the refresh token is verifier-bound. A
+client determines whether the authorization server supports the mechanism from
+authorization server metadata ({{metadata}}) before sending
+`refresh_challenge`.
+
+This mechanism does not make the authorization code exchange retryable. A
+client that does not receive this response repeats the authorization request.
+
+# Refreshing an Access Token {#refreshing}
+
+## Refresh Request {#refresh-request}
+
+A client presenting a verifier-bound refresh token at step n generates the
+refresh verifier for step n+1 and adds the following parameters to the request
+defined in {{Section 6 of RFC6749}}.
+
+refresh_counter:
+: REQUIRED. The step number n, as a positive integer in decimal notation
+  without leading zeros.
+
+refresh_verifier:
+: REQUIRED. The refresh verifier for step n.
+
+refresh_challenge:
+: REQUIRED. The refresh challenge for step n+1.
+
+A retransmission of a request is identical to the original in all three
+parameters.
+
+## Authorization Server Processing {#as-processing}
+
+The authorization server holds, for each grant, the current step number, the
+refresh challenge for that step, and a record of one or more recently accepted
+requests. The record of an accepted request consists of its step number, the
+challenge its verifier was checked against, and the `refresh_challenge` it
+carried.
+
+On receiving a refresh request for a verifier-bound refresh token, the
+authorization server performs the following steps in order.
+
+1. If `refresh_counter`, `refresh_verifier` or `refresh_challenge` is absent or
+   malformed, reject the request with `invalid_request`.
+2. If `refresh_counter` equals the current step number, compute the refresh
+   challenge from `refresh_counter` and `refresh_verifier`. If it does not
+   equal the challenge held, reject the request with `invalid_grant`; the grant
+   MUST NOT be revoked and its state MUST NOT change. Otherwise accept the
+   request: record it, increment the step number, replace the challenge held
+   with `refresh_challenge`, and issue an access token ({{success}}).
+3. Otherwise, if a record exists for step `refresh_counter`, the challenge
+   computed from `refresh_counter` and `refresh_verifier` equals the challenge
+   in that record, and `refresh_challenge` equals the one in that record,
+   reject the request with `duplicate_request` ({{duplicate-request}}). The
+   grant's state MUST NOT change.
+4. Otherwise, revoke the grant and reject the request with `invalid_grant`.
+
+Step 4 is reached by a request that names a recorded step but differs from the
+request accepted for it, by a request that names a step older than any
+recorded, and by a request that names a step the authorization server has not
+reached. Each indicates that the refresh token is held by a party whose state
+differs from that of the party whose requests were accepted. This is the
+condition that refresh token rotation is intended to detect.
+
+The authorization server cannot verify a refresh verifier for a step it no
+longer records. A request for such a step is acted upon on the strength of the
+refresh token alone ({{leaked-token}}).
+
+Steps 2 through 4 MUST be performed atomically with respect to other requests
+for the same grant. This document assumes an authorization server that provides
+this consistency.
+
+The authorization server MUST record the most recent accepted request and MAY
+record earlier ones. The effect of the number recorded is discussed in
+{{retention}}.
+
+## Successful Response {#success}
+
+The response is as defined in {{Section 5.1 of RFC6749}}. The authorization
+server MUST NOT include a `refresh_token` parameter. The verifier-bound refresh
+token remains valid until the grant expires or is revoked.
+
+## The duplicate_request Error {#duplicate-request}
+
+This document defines the following error code for use in the error response
+defined in {{Section 5.2 of RFC6749}}.
+
+duplicate_request:
+: The request is a retransmission of a request that the authorization server
+  has already accepted. No access token is issued. The client is to advance to
+  the next step.
+
+The access token issued for the original request is not returned again. The
+authorization server therefore retains no token material in order to answer a
+retransmission.
+
+# Client Requirements {#client}
+
+The client holds, for each grant, the refresh token, the current step number,
+the refresh verifier for that step, and at most one pending refresh verifier
+for the following step.
+
+The client MUST store the pending refresh verifier durably before sending the
+first request that carries its challenge. A client that restarts while a
+request is pending MUST resume with the stored verifier.
+
+The client retransmits a pending request unchanged until it receives one of the
+following.
+
+- A successful response. The client advances to the next step, for which the
+  pending verifier becomes the refresh verifier, and uses the access token.
+- A `duplicate_request` error. The client advances to the next step in the same
+  way and sends a new request to obtain an access token.
+- An `invalid_grant` or `invalid_client` error. The grant is no longer usable.
+  The client discards its state and repeats the authorization request.
+
+The client MUST treat any other outcome as a lost response. This includes
+connection failures, timeouts, responses with a 5xx or 429 status code,
+responses generated by intermediaries, and responses with a 200 status code
+that cannot be parsed as a token response. The client SHOULD apply a delay that
+increases between retransmissions.
+
+The client MUST NOT have more than one request outstanding for a grant. Where
+several execution contexts share a grant, such as multiple browser tabs or
+processes, they MUST serialize refresh requests. Two contexts that each send a
+request for the same step with different challenges are indistinguishable from
+two holders of the grant, and the grant is revoked.
+
+# Authorization Server Metadata {#metadata}
+
+This document defines the following authorization server metadata {{RFC8414}}
+parameter.
+
+rolling_refresh_verifiers_supported:
+: A boolean value. The value `true` indicates support for this document.
+
+A client MUST NOT send `refresh_challenge` in an authorization code token
+request to an authorization server that does not publish this parameter with
+the value `true`. An authorization server that does not implement this document
+ignores the unrecognized parameter and issues an ordinary refresh token, and
+the token response would give the client no indication of this.
+
+# Security Considerations {#security}
+
+## Detection of a Second Holder {#second-holder}
+
+A party that copies the client's stored state can obtain access tokens. When
+both that party and the client subsequently use the grant, they send requests
+for the same step with different challenges, or one of them sends a request for
+a step that the other has already moved past, and the grant is revoked under
+step 4 of {{as-processing}}. Detection does not depend on how far one party has
+advanced beyond the other or on the number of requests the authorization server
+records.
+
+As with refresh token rotation, detection requires that both parties use the
+grant. If the client never refreshes again, the second party is not detected.
+If the copy was made while the client had a request pending, both hold the same
+pending verifier, and detection occurs at the following step.
+
+## Disclosure of the Refresh Token {#leaked-token}
+
+A party that holds the refresh token but not the current refresh verifier
+cannot obtain an access token. It can cause the grant to be revoked, by sending
+a request that names any step other than the current one. This document treats
+that outcome as intended: the request demonstrates that the refresh token has
+been disclosed. It is also a means of denial of service for any party able to
+observe a refresh token.
+
+A request that names the current step with an incorrect verifier is rejected
+without effect, so that the current step cannot be consumed by a party that
+does not know its verifier.
+
+## Captured Requests {#captured}
+
+A refresh request contains the refresh verifier for its step. Once the request
+is accepted, that verifier has no further use. A party that captures a request,
+in transit or from a log, and replays it unchanged receives a
+`duplicate_request` error if the request is recorded by the authorization
+server, and otherwise causes the grant to be revoked. A captured request
+replayed with a different `refresh_challenge` causes the grant to be revoked.
+No access token is obtained in any of these cases.
+
+A party able to prevent a request from reaching the authorization server holds
+a verifier that has not yet been used. If it forwards the request unchanged, it
+obtains one access token; the client's retransmission receives
+`duplicate_request` and the event is not detected. If it substitutes its own
+`refresh_challenge`, it takes over the sequence and can continue to refresh.
+The client's retransmission of the original request then causes the grant to be
+revoked, however many further requests the substituting party has made. If the
+client does not retransmit, the substitution is not detected.
+
+## Client Storage {#client-storage}
+
+The values held by the client are sufficient to use the grant and can be copied
+by any party able to read the client's storage. This mechanism does not prevent
+such copying. It provides detection as described in {{second-holder}}.
+
+## Retention of Accepted Requests {#retention}
+
+A retransmission that arrives after the record of its request has been
+discarded is processed under step 4 of {{as-processing}} and causes the grant
+to be revoked, although only one party holds the grant. This can occur when a
+request is delayed in the network until after the client has completed later
+steps. Recording more accepted requests reduces the exposure at a cost of one
+step number and two challenges each. The appropriate number is an open issue
+({{open-issues}}).
+
+## Access Tokens
+
+Access tokens issued under this mechanism are bearer tokens. This document does
+not alter their properties.
+
+# IANA Considerations
+
+This section is not yet written. See {{open-issues}}.
+
+--- back
+
+# Comparison with One-Time Refresh Proofs {#comparison}
+
+"OAuth 2.0 One-Time Refresh Proofs" has the same sequence structure as this
+document. The client holds an asymmetric key, and each refresh request carries
+a signature over the refresh token, a counter and a nonce in place of a
+verifier and a challenge. The two proposals provide the same detection of a
+second holder, require a comparable amount of authorization server state, and
+share the trade-off described in {{retention}}. They differ as follows.
+
+Client storage:
+: A signing key can be held in a facility from which it cannot be exported,
+  which prevents a copy of client storage from being usable. The verifiers
+  defined in this document can always be copied.
+
+Disclosure of the refresh token alone:
+: Under One-Time Refresh Proofs, a request without a valid signature has no
+  effect. Under this document, the refresh token alone is sufficient to cause
+  revocation ({{leaked-token}}).
+
+Interception:
+: Under One-Time Refresh Proofs, a party that intercepts a request cannot alter
+  it. Under this document, such a party can substitute its own challenge
+  ({{captured}}).
+
+Implementation:
+: This document requires SHA-256 only. One-Time Refresh Proofs requires
+  signature generation in the client and verification in the authorization
+  server.
+
+# Example {#example}
+
+The step numbers, verifiers, challenges and tokens below were produced by an
+implementation of this document. The client identifier and host are
+illustrative. Line breaks are for display only.
+
+Authorization code exchange. The refresh verifier for step 1 is
+`WOYZKJGPiOuLIRAT1Cs5yAvSvC2CJy6szGI0MHYxHfg`, and `refresh_challenge` is the
+SHA-256 hash of that value prefixed with "1.".
+
+~~~
+POST /token HTTP/1.1
+Host: as.example
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code
+&client_id=s6BhdRkqt3
+&code=Qfz3wmoZdqzRg6MOqlJKdw
+&code_verifier=aHOUgiZjTctiVs3a6gfFI8drhZk-6qimeffKQ4PDxb0
+&refresh_challenge=bzitHP5nuIu3igxcubWQHzU-T0hpX4bHnJRy9gzPeIA
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: no-store
+
+{
+  "access_token": "7obGbxa6EyHntDYG1Qe2R2biV4Ptg2bB7rNvePDQHqI",
+  "token_type": "Bearer",
+  "expires_in": 600,
+  "refresh_token": "bVOpAlZTYSQU5Th2aZx8s9QyrWtyfh2B8A5K7tjAMzU"
+}
+~~~
+
+Step 1:
+
+~~~
+POST /token HTTP/1.1
+Host: as.example
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=refresh_token
+&client_id=s6BhdRkqt3
+&refresh_token=bVOpAlZTYSQU5Th2aZx8s9QyrWtyfh2B8A5K7tjAMzU
+&refresh_counter=1
+&refresh_verifier=WOYZKJGPiOuLIRAT1Cs5yAvSvC2CJy6szGI0MHYxHfg
+&refresh_challenge=ccHSuE_FvTGVaOOumztNpxcwwZnXZUFHGcvEEQfyGfk
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: no-store
+
+{
+  "access_token": "qrGnTH2fW4-oWjhgQ9Y-OwJFgCvkC4SPd8wwO1lgX9E",
+  "token_type": "Bearer",
+  "expires_in": 600
+}
+~~~
+
+Step 2. The authorization server accepts the request and the response is lost.
+The client sends the same request again and receives the error shown.
+
+~~~
+POST /token HTTP/1.1
+Host: as.example
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=refresh_token
+&client_id=s6BhdRkqt3
+&refresh_token=bVOpAlZTYSQU5Th2aZx8s9QyrWtyfh2B8A5K7tjAMzU
+&refresh_counter=2
+&refresh_verifier=evWRDcEKaIO5028u3UWCxJXVK5GMKqQF0Z9zbXGV8H0
+&refresh_challenge=xn-GDKn5QVNnjFGdjuYAsntL69-V3rYaM0wAzpJeafY
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Cache-Control: no-store
+
+{ "error": "duplicate_request" }
+~~~
+
+Step 3, with the same refresh token:
+
+~~~
+POST /token HTTP/1.1
+Host: as.example
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=refresh_token
+&client_id=s6BhdRkqt3
+&refresh_token=bVOpAlZTYSQU5Th2aZx8s9QyrWtyfh2B8A5K7tjAMzU
+&refresh_counter=3
+&refresh_verifier=BJcydipBDbZOaMAH3pTlFL7vspEC_Sb8Hgk70u6u06c
+&refresh_challenge=f2YavZ-_TxA6aYhdGDwE_an5WhZo4X_r_aeMs0WOLC0
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: no-store
+
+{
+  "access_token": "sdoybw0h7FZruRuqzgJqaJG10ZH3pw2me8DeY-FclX8",
+  "token_type": "Bearer",
+  "expires_in": 600
+}
+~~~
+
+The client's state is copied after step 4. The client then completes steps 5
+and 6. The party holding the copy sends a request for step 5 with the correct
+verifier and its own challenge. The request differs from the one accepted for
+step 5, and the grant is revoked. The client's request for step 7 also receives
+`invalid_grant`.
+
+~~~
+POST /token HTTP/1.1
+Host: as.example
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=refresh_token
+&client_id=s6BhdRkqt3
+&refresh_token=bVOpAlZTYSQU5Th2aZx8s9QyrWtyfh2B8A5K7tjAMzU
+&refresh_counter=5
+&refresh_verifier=5hLBTwyr0S4USRJRzjkFTyP6BJbQP8g-eNnbz9gvbAU
+&refresh_challenge=q5H14BKMcaoIaptNEo_FnvWG0BX5dsRxML9DVXuoSBM
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Cache-Control: no-store
+
+{ "error": "invalid_grant" }
+~~~
+
+# Open Issues {#open-issues}
+
+This document is an early draft. The following are known to be unresolved, and
+comment is invited on each.
+
+Retention:
+: How many accepted requests an authorization server is to record, and whether
+  the number is to be specified or left to deployment ({{retention}}).
+
+Step number in the challenge:
+: Whether the step number needs to be an input to the hash. The authorization
+  server checks a verifier only against a challenge held for a specific step,
+  and detection does not appear to depend on the binding.
+
+Revocation on the refresh token alone:
+: Whether revocation by a party that holds only the refresh token
+  ({{leaked-token}}) is acceptable, and whether a malformed request or a
+  request without a verifier should have the same effect.
+
+Lost code exchange response:
+: The authorization code exchange is not retryable.
+
+Other grants:
+: Only the authorization code grant is covered.
+
+Confidential clients:
+: Whether the mechanism is of use to clients that authenticate.
+
+Parameter names:
+: All names in this document are provisional. `refresh_counter` and
+  `duplicate_request` are shared with One-Time Refresh Proofs.
+
+IANA considerations:
+: Not yet written.

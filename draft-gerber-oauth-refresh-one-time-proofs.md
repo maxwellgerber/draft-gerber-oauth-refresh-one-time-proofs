@@ -669,6 +669,14 @@ Relationship to DPoP:
 Confidential clients:
 : Whether the mechanism is of use to clients that authenticate.
 
+Keyless alternative:
+: A companion proposal, "OAuth 2.0 Rolling Refresh Verifiers"
+  (draft-gerber-oauth-rolling-refresh-verifiers), has the same sequence
+  structure but replaces the signature with a hash preimage in the manner of
+  PKCE. It requires no asymmetric cryptography, cannot use non-extractable
+  storage, and allows a party holding only the refresh token to cause
+  revocation. Which of the two is preferable is an open question.
+
 Parameter names:
 : All names in this document are provisional.
 
